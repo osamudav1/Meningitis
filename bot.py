@@ -227,7 +227,7 @@ class BotStates(StatesGroup):
     editing_mode = State()
 
 # ==================== INIT BOT ====================
-bot = Bot(token=TOKEN)
+bot = Bot(token=BOT_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
