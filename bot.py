@@ -1,5 +1,5 @@
 """
-နက်ပြ ဘော့တ် - အပြည့်အစုံ (Button Editor + Post Editor + Inline Editor)
+နက်ပြ ဘော့တ် - အပြည့်အစုံ (Welcome Message with 2-Row Buttons)
 """
 
 import os
@@ -12,7 +12,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
-    Message, ReplyKeyboardMarkup, KeyboardButton,
+    Message, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton,
     InlineKeyboardMarkup, InlineKeyboardButton
 )
 from aiogram.filters import Command, CommandStart
@@ -70,7 +70,18 @@ class BotData:
             "welcome": {
                 "type": "text",
                 "content": "**{mention} ကြိုဆိုပါတယ်** 🎉\n\nအောက်ပါခလုတ်များကို နှိပ်ပြီး သွားရောက်ကြည့်ရှုနိုင်ပါတယ်။",
-                "buttons": []
+                "buttons": [
+                    # Row 1
+                    [
+                        {"text": "📢 Main Channel", "url": "https://t.me/yourchannel"},
+                        {"text": "💬 Fan Chat", "url": "https://t.me/yourgroup"}
+                    ],
+                    # Row 2
+                    [
+                        {"text": "📺 2D Anime", "callback": "2d_anime"},
+                        {"text": "🎬 3D Anime", "callback": "3d_anime"}
+                    ]
+                ]
             },
             "buttons": {
                 "main": [
@@ -137,17 +148,6 @@ class BotData:
         for parent, buttons in self.data["buttons"]["submenus"].items():
             for btn in buttons:
                 if btn["id"] == btn_id:
-                    return btn
-        return None
-    
-    def get_button_by_name(self, name: str, parent_id: str = None) -> Optional[Dict]:
-        if parent_id is None:
-            for btn in self.data["buttons"]["main"]:
-                if btn["name"] == name:
-                    return btn
-        else:
-            for btn in self.data["buttons"]["submenus"].get(parent_id, []):
-                if btn["name"] == name:
                     return btn
         return None
     
@@ -325,39 +325,71 @@ def format_text(text: str, user) -> str:
         text = text.replace(key, value)
     return text
 
-def create_inline_keyboard(buttons: List[Dict]) -> Optional[InlineKeyboardMarkup]:
+def create_inline_keyboard(buttons: List) -> Optional[InlineKeyboardMarkup]:
+    """Create inline keyboard with 2 rows support"""
     if not buttons:
         return None
+    
     inline_buttons = []
-    for btn in buttons:
-        if "url" in btn:
-            inline_buttons.append([InlineKeyboardButton(text=btn["text"], url=btn["url"])])
-        elif "callback" in btn:
-            inline_buttons.append([InlineKeyboardButton(text=btn["text"], callback_data=btn["callback"])])
-        else:
-            inline_buttons.append([InlineKeyboardButton(text=btn["text"], callback_data="none")])
+    
+    # If buttons is a list of lists (2 rows)
+    if isinstance(buttons, list) and len(buttons) > 0 and isinstance(buttons[0], list):
+        for row in buttons:
+            row_buttons = []
+            for btn in row:
+                if "url" in btn:
+                    row_buttons.append(InlineKeyboardButton(text=btn["text"], url=btn["url"]))
+                elif "callback" in btn:
+                    row_buttons.append(InlineKeyboardButton(text=btn["text"], callback_data=btn["callback"]))
+                else:
+                    row_buttons.append(InlineKeyboardButton(text=btn["text"], callback_data="none"))
+            inline_buttons.append(row_buttons)
+    else:
+        # Old format (single list)
+        for btn in buttons:
+            if "url" in btn:
+                inline_buttons.append([InlineKeyboardButton(text=btn["text"], url=btn["url"])])
+            elif "callback" in btn:
+                inline_buttons.append([InlineKeyboardButton(text=btn["text"], callback_data=btn["callback"])])
+            else:
+                inline_buttons.append([InlineKeyboardButton(text=btn["text"], callback_data="none")])
+    
     return InlineKeyboardMarkup(inline_keyboard=inline_buttons)
 
-def parse_buttons_text(buttons_text: str) -> List[Dict]:
+def parse_buttons_text(buttons_text: str) -> List:
+    """Parse buttons text - supports multiple rows with --- separator"""
     buttons = []
     if not buttons_text or buttons_text.lower() == "skip":
         return buttons
     
-    parts = buttons_text.split(",")
-    for part in parts:
-        part = part.strip()
-        if not part:
+    # Split by --- for multiple rows
+    rows = buttons_text.split("---")
+    
+    for row in rows:
+        row = row.strip()
+        if not row:
             continue
-        if "|" in part:
-            name, value = part.split("|", 1)
-            name = name.strip()
-            value = value.strip()
-            if value.startswith("http"):
-                buttons.append({"text": name, "url": value})
+        
+        row_buttons = []
+        parts = row.split(",")
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+            if "|" in part:
+                name, value = part.split("|", 1)
+                name = name.strip()
+                value = value.strip()
+                if value.startswith("http"):
+                    row_buttons.append({"text": name, "url": value})
+                else:
+                    row_buttons.append({"text": name, "callback": value})
             else:
-                buttons.append({"text": name, "callback": value})
-        else:
-            buttons.append({"text": part, "callback": "none"})
+                row_buttons.append({"text": part, "callback": "none"})
+        
+        if row_buttons:
+            buttons.append(row_buttons)
+    
     return buttons
 
 # ============================
@@ -476,12 +508,13 @@ async def cmd_start(message: Message):
     # Get welcome
     welcome = bot_data.get_welcome()
     
+    # Format message with user data
     if welcome["type"] == "text":
         formatted = format_text(welcome["content"], user)
         await message.answer(
             formatted,
             reply_markup=get_main_menu_keyboard(user_id),
-            reply_markup_inline=create_inline_keyboard(welcome.get("buttons", []))
+            reply_markup=create_inline_keyboard(welcome.get("buttons", []))
         )
     elif welcome["type"] == "photo":
         caption = format_text(welcome["content"].get("caption", ""), user)
@@ -489,7 +522,7 @@ async def cmd_start(message: Message):
             photo=welcome["content"]["file_id"],
             caption=caption,
             reply_markup=get_main_menu_keyboard(user_id),
-            reply_markup_inline=create_inline_keyboard(welcome.get("buttons", []))
+            reply_markup=create_inline_keyboard(welcome.get("buttons", []))
         )
 
 # ============================
@@ -762,7 +795,9 @@ async def add_inline_button_to_button(message: Message, state: FSMContext):
             "ပုံစံ: ခလုတ်နာမည်|URL\n"
             "ဥပမာ: `Main Channel|https://t.me/...`\n\n"
             "ဒါမှမဟုတ်: ခလုတ်နာမည်|callback:data\n"
-            "ဥပမာ: `Info|callback:info`"
+            "ဥပမာ: `Info|callback:info`\n\n"
+            "**၂ တန်းထည့်ချင်ရင်:** တန်းတစ်ခုစီကို --- နဲ့ခြားပါ။\n"
+            "ဥပမာ: `Button1|url1, Button2|url2 --- Button3|url3, Button4|url4`"
         )
         await state.set_state(BotStates.waiting_inline_button)
 
@@ -886,6 +921,8 @@ async def add_inline_to_message(message: Message, state: FSMContext):
             "ဥပမာ: `Main Channel|https://t.me/...`\n\n"
             "ဒါမှမဟုတ်: ခလုတ်နာမည်|callback:data\n"
             "ဥပမာ: `Info|callback:info`\n\n"
+            "**၂ တန်းထည့်ချင်ရင်:** တန်းတစ်ခုစီကို --- နဲ့ခြားပါ။\n"
+            "ဥပမာ: `Button1|url1, Button2|url2 --- Button3|url3, Button4|url4`\n\n"
             "ခလုတ်တစ်ခုထည့်ပြီးရင် Enter နှိပ်ပါ။\n"
             "အကုန်ပြီးရင် `done` လို့ရိုက်ပါ။"
         )
@@ -930,25 +967,19 @@ async def process_inline_button(message: Message, state: FSMContext):
         )
         return
     
-    # Add button to temp list
-    if "|" in message.text:
-        name, value = message.text.split("|", 1)
-        name = name.strip()
-        value = value.strip()
-        
-        if value.startswith("http"):
-            temp_buttons.append({"text": name, "url": value})
-            await message.answer(f"✅ URL ခလုတ် '{name}' ထည့်ပြီးပါပြီ။")
-        elif value.startswith("callback:"):
-            callback_data = value[9:]
-            temp_buttons.append({"text": name, "callback": callback_data})
-            await message.answer(f"✅ Callback ခလုတ် '{name}' ထည့်ပြီးပါပြီ။")
+    # Parse and add button(s)
+    new_buttons = parse_buttons_text(message.text)
+    if new_buttons:
+        if isinstance(new_buttons[0], list):
+            # Multiple rows
+            temp_buttons.extend(new_buttons)
+            await message.answer(f"✅ {sum(len(row) for row in new_buttons)} ခလုတ် ထည့်ပြီးပါပြီ။")
         else:
-            temp_buttons.append({"text": name, "callback": value})
-            await message.answer(f"✅ ခလုတ် '{name}' ထည့်ပြီးပါပြီ။")
+            # Single row
+            temp_buttons.append(new_buttons)
+            await message.answer(f"✅ {len(new_buttons)} ခလုတ် ထည့်ပြီးပါပြီ။")
     else:
-        temp_buttons.append({"text": message.text, "callback": "none"})
-        await message.answer(f"✅ ခလုတ် '{message.text}' ထည့်ပြီးပါပြီ။")
+        await message.answer("❌ ခလုတ်ပုံစံမှားနေပါတယ်။")
     
     await state.update_data(temp_buttons=temp_buttons)
     await message.answer("နောက်ထပ်ထည့်ချင်ရင် ဆက်ရိုက်ပါ။\nအကုန်ပြီးရင် `done` ရိုက်ပါ။")
@@ -1000,7 +1031,14 @@ async def welcome_editor(message: Message, state: FSMContext):
     
     welcome = bot_data.get_welcome()
     current_type = welcome["type"]
-    btn_count = len(welcome.get("buttons", []))
+    
+    # Count buttons
+    btn_count = 0
+    if welcome.get("buttons"):
+        if isinstance(welcome["buttons"][0], list):
+            btn_count = sum(len(row) for row in welcome["buttons"])
+        else:
+            btn_count = len(welcome["buttons"])
     
     text = (
         f"**👋 Welcome Message Editor**\n\n"
@@ -1012,7 +1050,7 @@ async def welcome_editor(message: Message, state: FSMContext):
     buttons = [
         [KeyboardButton(text="📝 Edit Welcome Text")],
         [KeyboardButton(text="🖼 Edit Welcome Photo")],
-        [KeyboardButton(text="🔘 Add Inline Button")],
+        [KeyboardButton(text="🔘 Add/Edit Inline Buttons")],
         [KeyboardButton(text="👁 Preview Welcome")],
         [KeyboardButton(text="🔙 Back")]
     ]
@@ -1061,14 +1099,16 @@ async def process_welcome_photo(message: Message, state: FSMContext):
     await message.answer("✅ Welcome Photo ပြောင်းပြီးပါပြီ။")
     await message.answer_photo(photo=photo.file_id, caption=caption)
 
-@dp.message(F.text == "🔘 Add Inline Button")
-async def add_welcome_button(message: Message, state: FSMContext):
+@dp.message(F.text == "🔘 Add/Edit Inline Buttons")
+async def edit_welcome_buttons(message: Message, state: FSMContext):
     await message.answer(
-        "Welcome Message အောက်မှာထည့်မယ့် Inline Button ကို ရိုက်ထည့်ပါ။\n\n"
-        "**URL ခလုတ်:** ခလုတ်နာမည်|URL\n"
+        "**Welcome Message အတွက် Inline Button များထည့်ရန်**\n\n"
+        "**ပုံစံ:** ခလုတ်နာမည်|URL\n"
         "ဥပမာ: `Main Channel|https://t.me/...`\n\n"
         "**Callback ခလုတ်:** ခလုတ်နာမည်|callback:data\n"
         "ဥပမာ: `Info|callback:info`\n\n"
+        "**၂ တန်းထည့်ချင်ရင်:** တန်းတစ်ခုစီကို --- နဲ့ခြားပါ။\n"
+        "ဥပမာ: `Button1|url1, Button2|url2 --- Button3|url3, Button4|url4`\n\n"
         "ခလုတ်တစ်ခုထည့်ပြီးရင် Enter နှိပ်ပါ။\n"
         "အကုန်ပြီးရင် `done` လို့ရိုက်ပါ။"
     )
@@ -1076,7 +1116,7 @@ async def add_welcome_button(message: Message, state: FSMContext):
     await state.set_state(BotStates.waiting_welcome_buttons)
 
 @dp.message(BotStates.waiting_welcome_buttons)
-async def process_welcome_button(message: Message, state: FSMContext):
+async def process_welcome_buttons(message: Message, state: FSMContext):
     data = await state.get_data()
     temp_buttons = data.get("temp_buttons", [])
     
@@ -1087,24 +1127,19 @@ async def process_welcome_button(message: Message, state: FSMContext):
         await message.answer("✅ Inline ခလုတ်များ ထည့်ပြီးပါပြီ။")
         return
     
-    if "|" in message.text:
-        name, value = message.text.split("|", 1)
-        name = name.strip()
-        value = value.strip()
-        
-        if value.startswith("http"):
-            temp_buttons.append({"text": name, "url": value})
-            await message.answer(f"✅ URL ခလုတ် '{name}' ထည့်ပြီးပါပြီ။")
-        elif value.startswith("callback:"):
-            callback_data = value[9:]
-            temp_buttons.append({"text": name, "callback": callback_data})
-            await message.answer(f"✅ Callback ခလုတ် '{name}' ထည့်ပြီးပါပြီ။")
+    # Parse and add button(s)
+    new_buttons = parse_buttons_text(message.text)
+    if new_buttons:
+        if isinstance(new_buttons[0], list):
+            # Multiple rows
+            temp_buttons.extend(new_buttons)
+            await message.answer(f"✅ {sum(len(row) for row in new_buttons)} ခလုတ် ထည့်ပြီးပါပြီ။")
         else:
-            temp_buttons.append({"text": name, "callback": value})
-            await message.answer(f"✅ ခလုတ် '{name}' ထည့်ပြီးပါပြီ။")
+            # Single row
+            temp_buttons.append(new_buttons)
+            await message.answer(f"✅ {len(new_buttons)} ခလုတ် ထည့်ပြီးပါပြီ။")
     else:
-        temp_buttons.append({"text": message.text, "callback": "none"})
-        await message.answer(f"✅ ခလုတ် '{message.text}' ထည့်ပြီးပါပြီ။")
+        await message.answer("❌ ခလုတ်ပုံစံမှားနေပါတယ်။")
     
     await state.update_data(temp_buttons=temp_buttons)
     await message.answer("နောက်ထပ်ထည့်ချင်ရင် ဆက်ရိုက်ပါ။\nအကုန်ပြီးရင် `done` ရိုက်ပါ။")
@@ -1256,7 +1291,7 @@ async def handle_callback(callback: CallbackQuery):
 
 async def main():
     print("=" * 60)
-    print("🤖 နက်ပြ ဘော့တ် - Button Editor + Post Editor + Inline Editor")
+    print("🤖 နက်ပြ ဘော့တ် - Welcome Message with 2-Row Buttons")
     print("=" * 60)
     print(f"👤 Owner ID: {OWNER_ID}")
     print(f"👥 Users: {bot_data.get_users_count()}")
