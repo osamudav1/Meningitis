@@ -12,8 +12,12 @@ from datetime import datetime
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
-    Message, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton,
-    InlineKeyboardMarkup, InlineKeyboardButton
+    Message, 
+    CallbackQuery,  # ✅ ဒီမှာ CallbackQuery ကို ထည့်ထားပါတယ်
+    ReplyKeyboardMarkup, 
+    KeyboardButton,
+    InlineKeyboardMarkup, 
+    InlineKeyboardButton
 )
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
@@ -57,13 +61,17 @@ class BotData:
             try:
                 with open(self.data_file, 'r', encoding='utf-8') as f:
                     return json.load(f)
-            except:
+            except Exception as e:
+                logger.error(f"Error loading data: {e}")
                 return self.get_default_data()
         return self.get_default_data()
     
     def save_data(self):
-        with open(self.data_file, 'w', encoding='utf-8') as f:
-            json.dump(self.data, f, ensure_ascii=False, indent=2)
+        try:
+            with open(self.data_file, 'w', encoding='utf-8') as f:
+                json.dump(self.data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"Error saving data: {e}")
     
     def get_default_data(self) -> Dict:
         return {
@@ -243,7 +251,7 @@ class BotData:
         return False
     
     # Messages
-    def add_message_to_button(self, btn_id: str, msg_type: str, content: Any, buttons: List = None) -> Dict:
+    def add_message_to_button(self, btn_id: str, msg_type: str, content: Any, buttons: List = None) -> Optional[Dict]:
         btn = self.get_button(btn_id)
         if btn:
             msg_id = str(uuid.uuid4())[:8]
@@ -281,28 +289,6 @@ class BotData:
                     msg["buttons"] = buttons
                     self.save_data()
                     return True
-        return False
-    
-    def move_inline_button(self, btn_id: str, msg_id: str, inline_index: int, direction: str) -> bool:
-        btn = self.get_button(btn_id)
-        if btn and "messages" in btn:
-            for msg in btn["messages"]:
-                if msg["id"] == msg_id:
-                    buttons = msg.get("buttons", [])
-                    if 0 <= inline_index < len(buttons):
-                        if direction == "⬆️" and inline_index > 0:
-                            buttons[inline_index], buttons[inline_index-1] = buttons[inline_index-1], buttons[inline_index]
-                            self.save_data()
-                            return True
-                        elif direction == "⬇️" and inline_index < len(buttons) - 1:
-                            buttons[inline_index], buttons[inline_index+1] = buttons[inline_index+1], buttons[inline_index]
-                            self.save_data()
-                            return True
-                        elif direction == "⬅️":
-                            # Remove button
-                            buttons.pop(inline_index)
-                            self.save_data()
-                            return True
         return False
 
 # Initialize
@@ -468,12 +454,11 @@ class BotStates(StatesGroup):
     waiting_parent_select = State()
     waiting_message_text = State()
     waiting_message_photo = State()
-    waiting_message_buttons = State()
+    waiting_question = State()
+    waiting_inline_button = State()
     waiting_welcome_text = State()
     waiting_welcome_photo = State()
     waiting_welcome_buttons = State()
-    waiting_inline_button = State()
-    waiting_question = State()
 
 # ============================
 # HANDLERS - START
@@ -502,8 +487,8 @@ async def cmd_start(message: Message):
                 f"**User ID:** `{user_id}`\n"
                 f"**စုစုပေါင်း:** {total} ယောက်"
             )
-        except:
-            pass
+        except Exception as e:
+            logger.error(f"Failed to send notification: {e}")
     
     # Get welcome
     welcome = bot_data.get_welcome()
@@ -665,89 +650,46 @@ async def show_submenu(message: Message, parent_btn: Dict, sub_buttons: List[Dic
 # BUTTON EDIT MODE HANDLERS
 # ============================
 
-@dp.message(F.text == "⬅️", F.state == "*")
-async def button_move_left(message: Message, state: FSMContext):
+@dp.message(F.text.in_(["⬅️", "⬇️", "⬆️", "➡️"]), F.state == "*")
+async def handle_button_move(message: Message, state: FSMContext):
     user_id = message.from_user.id
     if user_id != OWNER_ID:
         return
     
+    direction = message.text
     data = await state.get_data()
     btn_id = data.get("editing_button_id")
     
-    if btn_id and bot_data.move_button(btn_id, "⬅️"):
-        btn = bot_data.get_button(btn_id)
-        if btn:
-            text = f"🔧 Editing button: «{btn['name']}»\n\n✅ နေရာရွှေ့ပြီးပါပြီ။"
-            await message.answer(
-                text,
-                reply_markup=get_edit_buttons_keyboard()
-            )
+    if not btn_id:
+        await message.answer("❌ ခလုတ်မတွေ့ပါ။")
+        return
+    
+    if direction == "➡️":
+        # Show list of possible parent buttons
+        main_buttons = bot_data.get_main_buttons()
+        buttons = []
+        for btn in main_buttons:
+            if btn["id"] != btn_id:
+                buttons.append([KeyboardButton(text=btn["name"])])
+        buttons.append([KeyboardButton(text="❌ Cancel")])
+        
+        await state.update_data(move_target_id=btn_id)
+        await message.answer(
+            "ဒီခလုတ်ကို ဘယ်ခလုတ်အောက်ကိုရွှေ့ချင်လဲ ရွေးပါ။",
+            reply_markup=ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
+        )
+        await state.set_state("waiting_move_target")
     else:
-        await message.answer("❌ ရွှေ့လို့မရပါ။")
-
-@dp.message(F.text == "⬇️", F.state == "*")
-async def button_move_down(message: Message, state: FSMContext):
-    user_id = message.from_user.id
-    if user_id != OWNER_ID:
-        return
-    
-    data = await state.get_data()
-    btn_id = data.get("editing_button_id")
-    
-    if btn_id and bot_data.move_button(btn_id, "⬇️"):
-        btn = bot_data.get_button(btn_id)
-        if btn:
-            text = f"🔧 Editing button: «{btn['name']}»\n\n✅ နေရာရွှေ့ပြီးပါပြီ။"
-            await message.answer(
-                text,
-                reply_markup=get_edit_buttons_keyboard()
-            )
-    else:
-        await message.answer("❌ ရွှေ့လို့မရပါ။")
-
-@dp.message(F.text == "⬆️", F.state == "*")
-async def button_move_up(message: Message, state: FSMContext):
-    user_id = message.from_user.id
-    if user_id != OWNER_ID:
-        return
-    
-    data = await state.get_data()
-    btn_id = data.get("editing_button_id")
-    
-    if btn_id and bot_data.move_button(btn_id, "⬆️"):
-        btn = bot_data.get_button(btn_id)
-        if btn:
-            text = f"🔧 Editing button: «{btn['name']}»\n\n✅ နေရာရွှေ့ပြီးပါပြီ။"
-            await message.answer(
-                text,
-                reply_markup=get_edit_buttons_keyboard()
-            )
-    else:
-        await message.answer("❌ ရွှေ့လို့မရပါ။")
-
-@dp.message(F.text == "➡️", F.state == "*")
-async def button_move_right(message: Message, state: FSMContext):
-    user_id = message.from_user.id
-    if user_id != OWNER_ID:
-        return
-    
-    data = await state.get_data()
-    btn_id = data.get("editing_button_id")
-    
-    # Show list of possible parent buttons
-    main_buttons = bot_data.get_main_buttons()
-    buttons = []
-    for btn in main_buttons:
-        if btn["id"] != btn_id:  # Don't show itself
-            buttons.append([KeyboardButton(text=btn["name"])])
-    buttons.append([KeyboardButton(text="❌ Cancel")])
-    
-    await state.update_data(move_target_id=btn_id)
-    await message.answer(
-        "ဒီခလုတ်ကို ဘယ်ခလုတ်အောက်ကိုရွှေ့ချင်လဲ ရွေးပါ။",
-        reply_markup=ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
-    )
-    await state.set_state("waiting_move_target")
+        if bot_data.move_button(btn_id, direction):
+            btn = bot_data.get_button(btn_id)
+            if btn:
+                text = f"🔧 Editing button: «{btn['name']}»\n\n✅ နေရာရွှေ့ပြီးပါပြီ။"
+                await message.answer(
+                    text,
+                    reply_markup=get_edit_buttons_keyboard()
+                )
+        else:
+            await message.answer("❌ ရွှေ့လို့မရပါ။")
 
 @dp.message(F.state == "waiting_move_target")
 async def process_move_target(message: Message, state: FSMContext):
@@ -772,7 +714,8 @@ async def process_move_target(message: Message, state: FSMContext):
                 bot_data.add_button(btn_data["name"], parent=btn["id"])
                 
                 await message.answer(
-                    f"✅ '{btn_data['name']}' ကို '{btn['name']}' အောက်ကိုရွှေ့ပြီးပါပြီ။"
+                    f"✅ '{btn_data['name']}' ကို '{btn['name']}' အောက်ကိုရွှေ့ပြီးပါပြီ။",
+                    reply_markup=get_edit_buttons_keyboard()
                 )
                 await state.clear()
                 return
@@ -797,8 +740,11 @@ async def add_inline_button_to_button(message: Message, state: FSMContext):
             "ဒါမှမဟုတ်: ခလုတ်နာမည်|callback:data\n"
             "ဥပမာ: `Info|callback:info`\n\n"
             "**၂ တန်းထည့်ချင်ရင်:** တန်းတစ်ခုစီကို --- နဲ့ခြားပါ။\n"
-            "ဥပမာ: `Button1|url1, Button2|url2 --- Button3|url3, Button4|url4`"
+            "ဥပမာ: `Button1|url1, Button2|url2 --- Button3|url3, Button4|url4`\n\n"
+            "ခလုတ်တစ်ခုထည့်ပြီးရင် Enter နှိပ်ပါ။\n"
+            "အကုန်ပြီးရင် `done` လို့ရိုက်ပါ။"
         )
+        await state.update_data(temp_buttons=[])
         await state.set_state(BotStates.waiting_inline_button)
 
 # ============================
@@ -983,17 +929,6 @@ async def process_inline_button(message: Message, state: FSMContext):
     
     await state.update_data(temp_buttons=temp_buttons)
     await message.answer("နောက်ထပ်ထည့်ချင်ရင် ဆက်ရိုက်ပါ။\nအကုန်ပြီးရင် `done` ရိုက်ပါ။")
-
-@dp.message(F.text.in_(["⬅️", "⬇️", "⬆️", "➡️"]), F.state == "*")
-async def move_inline_button(message: Message, state: FSMContext):
-    """Move inline button in message"""
-    data = await state.get_data()
-    msg_id = data.get("current_message_id")
-    btn_id = data.get("current_button_id") or data.get("adding_to_button")
-    
-    # This would need to know which inline button to move
-    # For simplicity, we'll just acknowledge
-    await message.answer("Inline ခလုတ်နေရာရွှေ့ရန် - ခလုတ်အညွှန်းကို ရွေးချယ်ရန်လိုပါသည်။")
 
 # ============================
 # STOP EDITORS
@@ -1283,7 +1218,12 @@ async def handle_callback(callback: CallbackQuery):
     if data == "none":
         return
     
-    await callback.message.answer(f"Callback: {data}")
+    if data == "2d_anime":
+        await callback.message.answer("၂D Anime စာရင်း")
+    elif data == "3d_anime":
+        await callback.message.answer("၃D Anime စာရင်း")
+    else:
+        await callback.message.answer(f"Callback: {data}")
 
 # ============================
 # MAIN
