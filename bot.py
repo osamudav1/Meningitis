@@ -21,7 +21,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 import logging
 
 # ==================== CONFIGURATION ====================
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"  # @BotFather ကရတဲ့ Token
+TOKEN = "YOUR_BOT_TOKEN_HERE"  # @BotFather ကရတဲ့ Token
 OWNER_ID = 123456789  # သင့် Telegram User ID
 ADMIN_IDS = [123456789]  # Admin များရဲ့ ID
 
@@ -227,7 +227,7 @@ class BotStates(StatesGroup):
     editing_mode = State()
 
 # ==================== INIT BOT ====================
-bot = Bot(token=BOT_TOKEN)
+bot = Bot(token=TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
