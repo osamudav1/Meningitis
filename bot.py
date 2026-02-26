@@ -21,7 +21,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 import logging
 
 # ==================== CONFIGURATION ====================
-TOKEN = "YOUR_BOT_TOKEN_HERE"  # @BotFather ကရတဲ့ Token
+BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"  # @BotFather ကရတဲ့ Token
 OWNER_ID = 123456789  # သင့် Telegram User ID
 ADMIN_IDS = [123456789]  # Admin များရဲ့ ID
 
