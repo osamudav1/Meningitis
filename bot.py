@@ -1,6 +1,5 @@
 """
-နက်ပြ ဘော့တ် - Mode ၃ မျိုးနဲ့ အပြည့်အစုံ
-Aiogram 3.17 ကိုသုံးထားသည်
+နက်ပြ ဘော့တ် - အပြည့်အစုံ (Button Editor + Post Editor + Inline Editor)
 """
 
 import os
@@ -206,7 +205,6 @@ class BotData:
                 if direction == "⬆️" and i > 0:
                     self.data["buttons"]["main"][i], self.data["buttons"]["main"][i-1] = \
                         self.data["buttons"]["main"][i-1], self.data["buttons"]["main"][i]
-                    # Update orders
                     for j, b in enumerate(self.data["buttons"]["main"]):
                         b["order"] = j
                     self.save_data()
@@ -218,9 +216,7 @@ class BotData:
                         b["order"] = j
                     self.save_data()
                     return True
-                elif direction == "⬅️":
-                    # Already in main, can't go out
-                    return False
+                return False
         
         # Submenu
         for parent, buttons in self.data["buttons"]["submenus"].items():
@@ -276,6 +272,38 @@ class BotData:
             self.save_data()
             return True
         return False
+    
+    def update_message_buttons(self, btn_id: str, msg_id: str, buttons: List[Dict]) -> bool:
+        btn = self.get_button(btn_id)
+        if btn and "messages" in btn:
+            for msg in btn["messages"]:
+                if msg["id"] == msg_id:
+                    msg["buttons"] = buttons
+                    self.save_data()
+                    return True
+        return False
+    
+    def move_inline_button(self, btn_id: str, msg_id: str, inline_index: int, direction: str) -> bool:
+        btn = self.get_button(btn_id)
+        if btn and "messages" in btn:
+            for msg in btn["messages"]:
+                if msg["id"] == msg_id:
+                    buttons = msg.get("buttons", [])
+                    if 0 <= inline_index < len(buttons):
+                        if direction == "⬆️" and inline_index > 0:
+                            buttons[inline_index], buttons[inline_index-1] = buttons[inline_index-1], buttons[inline_index]
+                            self.save_data()
+                            return True
+                        elif direction == "⬇️" and inline_index < len(buttons) - 1:
+                            buttons[inline_index], buttons[inline_index+1] = buttons[inline_index+1], buttons[inline_index]
+                            self.save_data()
+                            return True
+                        elif direction == "⬅️":
+                            # Remove button
+                            buttons.pop(inline_index)
+                            self.save_data()
+                            return True
+        return False
 
 # Initialize
 bot_data = BotData()
@@ -304,6 +332,8 @@ def create_inline_keyboard(buttons: List[Dict]) -> Optional[InlineKeyboardMarkup
     for btn in buttons:
         if "url" in btn:
             inline_buttons.append([InlineKeyboardButton(text=btn["text"], url=btn["url"])])
+        elif "callback" in btn:
+            inline_buttons.append([InlineKeyboardButton(text=btn["text"], callback_data=btn["callback"])])
         else:
             inline_buttons.append([InlineKeyboardButton(text=btn["text"], callback_data="none")])
     return InlineKeyboardMarkup(inline_keyboard=inline_buttons)
@@ -319,8 +349,13 @@ def parse_buttons_text(buttons_text: str) -> List[Dict]:
         if not part:
             continue
         if "|" in part:
-            name, url = part.split("|", 1)
-            buttons.append({"text": name.strip(), "url": url.strip()})
+            name, value = part.split("|", 1)
+            name = name.strip()
+            value = value.strip()
+            if value.startswith("http"):
+                buttons.append({"text": name, "url": value})
+            else:
+                buttons.append({"text": name, "callback": value})
         else:
             buttons.append({"text": part, "callback": "none"})
     return buttons
@@ -342,7 +377,7 @@ def get_main_menu_keyboard(user_id: int = None):
     if row:
         buttons.append(row)
     
-    # Mode indicator
+    # Mode buttons for owner
     if user_id == OWNER_ID:
         mode = user_modes.get(user_id, "main")
         if mode == "main":
@@ -360,8 +395,31 @@ def get_main_menu_keyboard(user_id: int = None):
     
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
-def get_back_keyboard():
-    buttons = [[KeyboardButton(text="🔙 Back")]]
+def get_edit_buttons_keyboard():
+    """ခလုတ်တစ်ခုကိုနှိပ်ရင် ပြမယ့်ခလုတ်တွေ"""
+    buttons = [
+        [KeyboardButton(text="⬅️"), KeyboardButton(text="⬇️"), 
+         KeyboardButton(text="⬆️"), KeyboardButton(text="➡️"), KeyboardButton(text="*️⃣")],
+        [KeyboardButton(text="⏹ Stop Edit")]
+    ]
+    return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
+
+def get_post_edit_buttons_keyboard():
+    """Post Edit Mode မှာ ပြမယ့်ခလုတ်တွေ"""
+    buttons = [
+        [KeyboardButton(text="➕ Add Message")],
+        [KeyboardButton(text="➕ Add Question")],
+        [KeyboardButton(text="⏹ Stop Editor")]
+    ]
+    return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
+
+def get_message_edit_buttons_keyboard():
+    """Message တစ်ခုကိုနှိပ်ရင် ပြမယ့်ခလုတ်တွေ"""
+    buttons = [
+        [KeyboardButton(text="⬅️"), KeyboardButton(text="⬇️"), 
+         KeyboardButton(text="⬆️"), KeyboardButton(text="➡️"), KeyboardButton(text="*️⃣")],
+        [KeyboardButton(text="⏹ Stop Editor")]
+    ]
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
 def get_confirmation_keyboard():
@@ -382,10 +440,8 @@ class BotStates(StatesGroup):
     waiting_welcome_text = State()
     waiting_welcome_photo = State()
     waiting_welcome_buttons = State()
-    waiting_broadcast_text = State()
-    waiting_broadcast_photo = State()
-    waiting_broadcast_buttons = State()
-    waiting_broadcast_confirm = State()
+    waiting_inline_button = State()
+    waiting_question = State()
 
 # ============================
 # HANDLERS - START
@@ -456,16 +512,18 @@ async def toggle_mode(message: Message):
             "ခလုတ်တစ်ခုကိုနှိပ်ရင် အဲဒီခလုတ်ကို ပြင်လို့ရပါမယ်။\n"
             "- နာမည်ပြောင်းရန်\n"
             "- ဖျက်ရန်\n"
-            "- ခလုတ်ခွဲအသစ်ထည့်ရန်"
+            "- ခလုတ်ခွဲအသစ်ထည့်ရန်\n"
+            "- နေရာရွှေ့ရန်\n"
+            "- Inline Button ထည့်ရန်"
         )
     elif message.text == "📝 Post Edit Mode":
         user_modes[user_id] = "post_edit"
         await message.answer(
             "📝 **Post Edit Mode**\n\n"
-            "ခလုတ်တစ်ခုကိုနှိပ်ရင် အဲဒီခလုတ်အတွက် Message ထည့်လို့ရပါမယ်။\n"
-            "- Text Message ထည့်ရန်\n"
-            "- Photo Message ထည့်ရန်\n"
-            "- Message များကြည့်ရန်"
+            "ခလုတ်တစ်ခုကိုနှိပ်ရင် အဲဒီခလုတ်အတွက် Message တွေကိုပြမယ်။\n"
+            "- Add Message နှိပ်ပြီး Message အသစ်ထည့်လို့ရ\n"
+            "- Add Question နှိပ်ပြီး Question ထည့်လို့ရ\n"
+            "- Message တစ်ခုကိုနှိပ်ရင် အဲဒီ Message ကိုပြင်လို့ရ"
         )
     
     await message.answer("မီနူးပြန်ပြသည်", reply_markup=get_main_menu_keyboard(user_id))
@@ -484,13 +542,11 @@ async def handle_all_buttons(message: Message, state: FSMContext):
     btn = None
     parent_id = None
     
-    # Check in main
     for b in bot_data.get_main_buttons():
         if b["name"] == btn_name:
             btn = b
             break
     
-    # Check in submenus
     if not btn:
         for parent, buttons in bot_data.data["buttons"]["submenus"].items():
             for b in buttons:
@@ -506,12 +562,24 @@ async def handle_all_buttons(message: Message, state: FSMContext):
     
     # ===== BUTTON EDIT MODE =====
     if mode == "button_edit" and user_id == OWNER_ID:
-        await show_button_edit_menu(message, btn, state)
+        await state.update_data(editing_button_id=btn["id"], editing_button_name=btn["name"])
+        
+        text = f"🔧 Editing button: «{btn['name']}»"
+        await message.answer(
+            text,
+            reply_markup=get_edit_buttons_keyboard()
+        )
         return
     
     # ===== POST EDIT MODE =====
     if mode == "post_edit" and user_id == OWNER_ID:
-        await show_post_edit_menu(message, btn, state)
+        await state.update_data(current_button_id=btn["id"], current_button_name=btn["name"])
+        
+        text = f"**{btn['name']}** အတွက် Messages"
+        await message.answer(
+            text,
+            reply_markup=get_post_edit_buttons_keyboard()
+        )
         return
     
     # ===== NORMAL MODE =====
@@ -535,6 +603,11 @@ async def handle_all_buttons(message: Message, state: FSMContext):
                     caption=msg["content"].get("caption", ""),
                     reply_markup=create_inline_keyboard(msg.get("buttons", []))
                 )
+            elif msg["type"] == "question":
+                await message.answer(
+                    f"❓ {msg['content']}",
+                    reply_markup=create_inline_keyboard(msg.get("buttons", []))
+                )
     else:
         await message.answer(f"{btn_name} - ပို့စ်မရှိသေး")
 
@@ -556,266 +629,364 @@ async def show_submenu(message: Message, parent_btn: Dict, sub_buttons: List[Dic
     )
 
 # ============================
-# BUTTON EDIT MODE
+# BUTTON EDIT MODE HANDLERS
 # ============================
 
-async def show_button_edit_menu(message: Message, btn: Dict, state: FSMContext):
-    await state.update_data(current_button_id=btn["id"], current_button_name=btn["name"])
+@dp.message(F.text == "⬅️", F.state == "*")
+async def button_move_left(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    if user_id != OWNER_ID:
+        return
     
-    buttons = [
-        [KeyboardButton(text=f"✏️ Rename: {btn['name']}")],
-        [KeyboardButton(text=f"🗑 Delete: {btn['name']}")],
-        [KeyboardButton(text="➕ Add Sub Button")],
-        [KeyboardButton(text="⬆️ Move Up"), KeyboardButton(text="⬇️ Move Down")],
-        [KeyboardButton(text="⬅️ Move Out to Main")],
-        [KeyboardButton(text="🔙 Back to Main")]
-    ]
+    data = await state.get_data()
+    btn_id = data.get("editing_button_id")
     
+    if btn_id and bot_data.move_button(btn_id, "⬅️"):
+        btn = bot_data.get_button(btn_id)
+        if btn:
+            text = f"🔧 Editing button: «{btn['name']}»\n\n✅ နေရာရွှေ့ပြီးပါပြီ။"
+            await message.answer(
+                text,
+                reply_markup=get_edit_buttons_keyboard()
+            )
+    else:
+        await message.answer("❌ ရွှေ့လို့မရပါ။")
+
+@dp.message(F.text == "⬇️", F.state == "*")
+async def button_move_down(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    if user_id != OWNER_ID:
+        return
+    
+    data = await state.get_data()
+    btn_id = data.get("editing_button_id")
+    
+    if btn_id and bot_data.move_button(btn_id, "⬇️"):
+        btn = bot_data.get_button(btn_id)
+        if btn:
+            text = f"🔧 Editing button: «{btn['name']}»\n\n✅ နေရာရွှေ့ပြီးပါပြီ။"
+            await message.answer(
+                text,
+                reply_markup=get_edit_buttons_keyboard()
+            )
+    else:
+        await message.answer("❌ ရွှေ့လို့မရပါ။")
+
+@dp.message(F.text == "⬆️", F.state == "*")
+async def button_move_up(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    if user_id != OWNER_ID:
+        return
+    
+    data = await state.get_data()
+    btn_id = data.get("editing_button_id")
+    
+    if btn_id and bot_data.move_button(btn_id, "⬆️"):
+        btn = bot_data.get_button(btn_id)
+        if btn:
+            text = f"🔧 Editing button: «{btn['name']}»\n\n✅ နေရာရွှေ့ပြီးပါပြီ။"
+            await message.answer(
+                text,
+                reply_markup=get_edit_buttons_keyboard()
+            )
+    else:
+        await message.answer("❌ ရွှေ့လို့မရပါ။")
+
+@dp.message(F.text == "➡️", F.state == "*")
+async def button_move_right(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    if user_id != OWNER_ID:
+        return
+    
+    data = await state.get_data()
+    btn_id = data.get("editing_button_id")
+    
+    # Show list of possible parent buttons
+    main_buttons = bot_data.get_main_buttons()
+    buttons = []
+    for btn in main_buttons:
+        if btn["id"] != btn_id:  # Don't show itself
+            buttons.append([KeyboardButton(text=btn["name"])])
+    buttons.append([KeyboardButton(text="❌ Cancel")])
+    
+    await state.update_data(move_target_id=btn_id)
     await message.answer(
-        f"**{btn['name']}** ကိုပြင်ရန်",
+        "ဒီခလုတ်ကို ဘယ်ခလုတ်အောက်ကိုရွှေ့ချင်လဲ ရွေးပါ။",
         reply_markup=ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
     )
+    await state.set_state("waiting_move_target")
 
-@dp.message(F.text.startswith("✏️ Rename:"))
-async def rename_button_prompt(message: Message, state: FSMContext):
+@dp.message(F.state == "waiting_move_target")
+async def process_move_target(message: Message, state: FSMContext):
+    data = await state.get_data()
+    btn_id = data.get("move_target_id")
+    target_name = message.text
+    
+    if target_name == "❌ Cancel":
+        await state.clear()
+        await message.answer("ပယ်ဖျက်လိုက်သည်။")
+        return
+    
+    # Find target button
+    for btn in bot_data.get_main_buttons():
+        if btn["name"] == target_name:
+            # Move button under target
+            btn_data = bot_data.get_button(btn_id)
+            if btn_data:
+                # Remove from current location
+                bot_data.delete_button(btn_id)
+                # Add under target
+                bot_data.add_button(btn_data["name"], parent=btn["id"])
+                
+                await message.answer(
+                    f"✅ '{btn_data['name']}' ကို '{btn['name']}' အောက်ကိုရွှေ့ပြီးပါပြီ။"
+                )
+                await state.clear()
+                return
+    
+    await message.answer("❌ ခလုတ်မတွေ့ပါ။")
+
+@dp.message(F.text == "*️⃣", F.state == "*")
+async def add_inline_button_to_button(message: Message, state: FSMContext):
     user_id = message.from_user.id
     if user_id != OWNER_ID:
         return
     
     data = await state.get_data()
-    btn_id = data.get("current_button_id")
+    btn_id = data.get("editing_button_id")
     
     if btn_id:
-        await state.update_data(rename_btn_id=btn_id)
-        await message.answer("နာမည်အသစ်ကို ရိုက်ထည့်ပါ။")
-        await state.set_state(BotStates.waiting_button_rename)
-
-@dp.message(BotStates.waiting_button_rename)
-async def process_rename(message: Message, state: FSMContext):
-    data = await state.get_data()
-    btn_id = data.get("rename_btn_id")
-    
-    if bot_data.rename_button(btn_id, message.text):
-        await state.clear()
+        await state.update_data(inline_target_button=btn_id)
         await message.answer(
-            f"✅ နာမည်ပြောင်းပြီးပါပြီ။",
-            reply_markup=get_main_menu_keyboard(message.from_user.id)
+            "**Inline Button ထည့်ရန်**\n\n"
+            "ပုံစံ: ခလုတ်နာမည်|URL\n"
+            "ဥပမာ: `Main Channel|https://t.me/...`\n\n"
+            "ဒါမှမဟုတ်: ခလုတ်နာမည်|callback:data\n"
+            "ဥပမာ: `Info|callback:info`"
         )
-    else:
-        await message.answer("❌ နာမည်ပြောင်းလို့မရပါ။")
-
-@dp.message(F.text.startswith("🗑 Delete:"))
-async def delete_button(message: Message, state: FSMContext):
-    user_id = message.from_user.id
-    if user_id != OWNER_ID:
-        return
-    
-    data = await state.get_data()
-    btn_id = data.get("current_button_id")
-    
-    if btn_id:
-        bot_data.delete_button(btn_id)
-        await state.clear()
-        await message.answer(
-            f"✅ ခလုတ်ဖျက်ပြီးပါပြီ။",
-            reply_markup=get_main_menu_keyboard(user_id)
-        )
-
-@dp.message(F.text == "➕ Add Sub Button")
-async def add_sub_button_prompt(message: Message, state: FSMContext):
-    user_id = message.from_user.id
-    if user_id != OWNER_ID:
-        return
-    
-    data = await state.get_data()
-    parent_id = data.get("current_button_id")
-    
-    if parent_id:
-        await state.update_data(parent_id=parent_id)
-        await message.answer("ခလုတ်ခွဲနာမည်အသစ်ကို ရိုက်ထည့်ပါ။")
-        await state.set_state(BotStates.waiting_button_name)
-
-@dp.message(F.text == "⬆️ Move Up")
-async def move_button_up(message: Message, state: FSMContext):
-    user_id = message.from_user.id
-    if user_id != OWNER_ID:
-        return
-    
-    data = await state.get_data()
-    btn_id = data.get("current_button_id")
-    
-    if bot_data.move_button(btn_id, "⬆️"):
-        await message.answer("✅ အပေါ်ကိုရွှေ့ပြီးပါပြီ။")
-    else:
-        await message.answer("❌ ရွှေ့လို့မရပါ။")
-
-@dp.message(F.text == "⬇️ Move Down")
-async def move_button_down(message: Message, state: FSMContext):
-    user_id = message.from_user.id
-    if user_id != OWNER_ID:
-        return
-    
-    data = await state.get_data()
-    btn_id = data.get("current_button_id")
-    
-    if bot_data.move_button(btn_id, "⬇️"):
-        await message.answer("✅ အောက်ကိုရွှေ့ပြီးပါပြီ။")
-    else:
-        await message.answer("❌ ရွှေ့လို့မရပါ။")
-
-@dp.message(F.text == "⬅️ Move Out to Main")
-async def move_button_out(message: Message, state: FSMContext):
-    user_id = message.from_user.id
-    if user_id != OWNER_ID:
-        return
-    
-    data = await state.get_data()
-    btn_id = data.get("current_button_id")
-    
-    if bot_data.move_button(btn_id, "⬅️"):
-        await message.answer("✅ Main Menu ကိုရွှေ့ပြီးပါပြီ။")
-    else:
-        await message.answer("❌ ရွှေ့လို့မရပါ။")
+        await state.set_state(BotStates.waiting_inline_button)
 
 # ============================
-# POST EDIT MODE
+# POST EDIT MODE HANDLERS
 # ============================
 
-async def show_post_edit_menu(message: Message, btn: Dict, state: FSMContext):
-    await state.update_data(post_btn_id=btn["id"], post_btn_name=btn["name"])
+@dp.message(F.text == "➕ Add Message", F.state == "*")
+async def add_message_prompt(message: Message, state: FSMContext):
+    data = await state.get_data()
+    btn_id = data.get("current_button_id")
     
-    buttons = [
-        [KeyboardButton(text="📝 Add Text Message")],
-        [KeyboardButton(text="🖼 Add Photo Message")],
-        [KeyboardButton(text="📋 View Messages")],
-        [KeyboardButton(text="🔙 Back to Main")]
-    ]
+    if not btn_id:
+        await message.answer("ခလုတ်မတွေ့ပါ။")
+        return
     
-    await message.answer(
-        f"**{btn['name']}** အတွက် Message ထည့်ရန်",
-        reply_markup=ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
-    )
-
-@dp.message(F.text == "📝 Add Text Message")
-async def add_text_prompt(message: Message, state: FSMContext):
+    await state.update_data(adding_to_button=btn_id)
     await message.answer(
         "Message စာသားကို ရိုက်ထည့်ပါ။\n\n"
-        "ပြီးရင် Inline Button ထည့်လို့ရပါမယ်။"
+        "ပြီးရင် Preview ပြပြီး Inline Button ထည့်လို့ရပါမယ်။"
     )
     await state.set_state(BotStates.waiting_message_text)
 
-@dp.message(F.text == "🖼 Add Photo Message")
-async def add_photo_prompt(message: Message, state: FSMContext):
+@dp.message(F.text == "➕ Add Question", F.state == "*")
+async def add_question_prompt(message: Message, state: FSMContext):
+    data = await state.get_data()
+    btn_id = data.get("current_button_id")
+    
+    if not btn_id:
+        await message.answer("ခလုတ်မတွေ့ပါ။")
+        return
+    
+    await state.update_data(adding_to_button=btn_id)
     await message.answer(
-        "ဓာတ်ပုံကို ပို့ပါ။\n"
-        "ဓာတ်ပုံနဲ့အတူ စာသားပါထည့်ချင်ရင် Caption မှာရေးပါ။\n\n"
-        "ပြီးရင် Inline Button ထည့်လို့ရပါမယ်။"
+        "Question မေးခွန်းကို ရိုက်ထည့်ပါ။"
     )
-    await state.set_state(BotStates.waiting_message_photo)
+    await state.set_state(BotStates.waiting_question)
+
+@dp.message(BotStates.waiting_question)
+async def process_question(message: Message, state: FSMContext):
+    data = await state.get_data()
+    btn_id = data.get("adding_to_button")
+    
+    bot_data.add_message_to_button(btn_id, "question", message.text)
+    await state.clear()
+    
+    btn = bot_data.get_button(btn_id)
+    await message.answer(
+        f"✅ Question ထည့်ပြီးပါပြီ။",
+        reply_markup=get_post_edit_buttons_keyboard()
+    )
 
 @dp.message(BotStates.waiting_message_text)
-async def process_text_message(message: Message, state: FSMContext):
+async def process_message_text(message: Message, state: FSMContext):
     if message.text == "/cancel":
         await state.clear()
         await message.answer("ပယ်ဖျက်လိုက်သည်။")
         return
     
-    await state.update_data(message_text=message.text)
+    data = await state.get_data()
+    btn_id = data.get("adding_to_button")
     
-    await message.answer(
-        "Inline ခလုတ်တွေ ထည့်ချင်ရင် အောက်ပါပုံစံအတိုင်း ရိုက်ထည့်ပါ။\n"
-        "မထည့်ချင်ရင် 'skip' လို့ရိုက်ပါ။\n\n"
-        "ပုံစံ: ခလုတ်နာမည်|URL, ခလုတ်2|url2\n"
-        "ဥပမာ: Channel|https://t.me/..., Group|https://t.me/..."
-    )
-    await state.set_state(BotStates.waiting_message_buttons)
+    # Save message
+    msg = bot_data.add_message_to_button(btn_id, "text", message.text)
+    
+    if msg:
+        await state.update_data(current_message_id=msg["id"])
+        
+        # Send preview
+        await message.answer("**Preview:**")
+        await message.answer(message.text)
+        
+        # Show edit buttons
+        await message.answer(
+            "⬅️ ⬇️ ⬆️ ➡️  *️⃣",
+            reply_markup=get_message_edit_buttons_keyboard()
+        )
+    else:
+        await message.answer("❌ Message ထည့်မရပါ။")
 
-@dp.message(BotStates.waiting_message_photo, F.photo)
-async def process_photo_message(message: Message, state: FSMContext):
+@dp.message(F.photo, F.state == BotStates.waiting_message_text)
+async def process_message_photo(message: Message, state: FSMContext):
+    data = await state.get_data()
+    btn_id = data.get("adding_to_button")
     photo = message.photo[-1]
     caption = message.caption or ""
     
-    await state.update_data(
-        message_photo=photo.file_id,
-        message_caption=caption
-    )
+    content = {"file_id": photo.file_id, "caption": caption}
+    msg = bot_data.add_message_to_button(btn_id, "photo", content)
     
-    await message.answer(
-        "Inline ခလုတ်တွေ ထည့်ချင်ရင် အောက်ပါပုံစံအတိုင်း ရိုက်ထည့်ပါ။\n"
-        "မထည့်ချင်ရင် 'skip' လို့ရိုက်ပါ။\n\n"
-        "ပုံစံ: ခလုတ်နာမည်|URL, ခလုတ်2|url2\n"
-        "ဥပမာ: Channel|https://t.me/..., Group|https://t.me/..."
-    )
-    await state.set_state(BotStates.waiting_message_buttons)
-
-@dp.message(BotStates.waiting_message_buttons)
-async def process_message_buttons(message: Message, state: FSMContext):
-    data = await state.get_data()
-    btn_id = data.get("post_btn_id")
-    
-    buttons = []
-    if message.text.lower() != "skip":
-        buttons = parse_buttons_text(message.text)
-    
-    if "message_text" in data:
-        # Save text message
-        bot_data.add_message_to_button(
-            btn_id,
-            "text",
-            data["message_text"],
-            buttons
-        )
+    if msg:
+        await state.update_data(current_message_id=msg["id"])
+        
         # Send preview
-        await message.answer("✅ Message ထည့်ပြီးပါပြီ။ အောက်ပါအတိုင်းပြမှာပါ။")
+        await message.answer("**Preview:**")
+        await message.answer_photo(photo=photo.file_id, caption=caption)
+        
+        # Show edit buttons
         await message.answer(
-            data["message_text"],
-            reply_markup=create_inline_keyboard(buttons)
+            "⬅️ ⬇️ ⬆️ ➡️  *️⃣",
+            reply_markup=get_message_edit_buttons_keyboard()
         )
-    elif "message_photo" in data:
-        # Save photo message
-        content = {
-            "file_id": data["message_photo"],
-            "caption": data.get("message_caption", "")
-        }
-        bot_data.add_message_to_button(btn_id, "photo", content, buttons)
-        # Send preview
-        await message.answer("✅ Message ထည့်ပြီးပါပြီ။ အောက်ပါအတိုင်းပြမှာပါ။")
-        await message.answer_photo(
-            photo=data["message_photo"],
-            caption=data.get("message_caption", ""),
-            reply_markup=create_inline_keyboard(buttons)
-        )
-    
-    await state.clear()
-    user_modes[message.from_user.id] = "main"
-    await message.answer(
-        "ပင်မမီနူး",
-        reply_markup=get_main_menu_keyboard(message.from_user.id)
-    )
+    else:
+        await message.answer("❌ Message ထည့်မရပါ။")
 
-@dp.message(F.text == "📋 View Messages")
-async def view_messages(message: Message, state: FSMContext):
+# ============================
+# MESSAGE EDIT HANDLERS
+# ============================
+
+@dp.message(F.text == "*️⃣", F.state == "*")
+async def add_inline_to_message(message: Message, state: FSMContext):
     data = await state.get_data()
-    btn_id = data.get("post_btn_id")
-    btn_name = data.get("post_btn_name")
+    msg_id = data.get("current_message_id")
+    btn_id = data.get("current_button_id") or data.get("adding_to_button")
     
-    messages = bot_data.get_button_messages(btn_id)
+    if msg_id and btn_id:
+        await state.update_data(inline_message_id=msg_id, inline_button_id=btn_id)
+        await message.answer(
+            "**Inline Button ထည့်ရန်**\n\n"
+            "ပုံစံ: ခလုတ်နာမည်|URL\n"
+            "ဥပမာ: `Main Channel|https://t.me/...`\n\n"
+            "ဒါမှမဟုတ်: ခလုတ်နာမည်|callback:data\n"
+            "ဥပမာ: `Info|callback:info`\n\n"
+            "ခလုတ်တစ်ခုထည့်ပြီးရင် Enter နှိပ်ပါ။\n"
+            "အကုန်ပြီးရင် `done` လို့ရိုက်ပါ။"
+        )
+        await state.update_data(temp_buttons=[])
+        await state.set_state(BotStates.waiting_inline_button)
+
+@dp.message(BotStates.waiting_inline_button)
+async def process_inline_button(message: Message, state: FSMContext):
+    data = await state.get_data()
+    temp_buttons = data.get("temp_buttons", [])
     
-    if not messages:
-        await message.answer(f"{btn_name} အတွက် Message မရှိသေးပါ။")
+    if message.text.lower() == "done":
+        msg_id = data.get("inline_message_id")
+        btn_id = data.get("inline_button_id") or data.get("inline_target_button")
+        
+        if msg_id and btn_id:
+            bot_data.update_message_buttons(btn_id, msg_id, temp_buttons)
+            
+            # Show final preview
+            btn = bot_data.get_button(btn_id)
+            if btn:
+                for msg in btn.get("messages", []):
+                    if msg["id"] == msg_id:
+                        if msg["type"] == "text":
+                            await message.answer("**Final Preview:**")
+                            await message.answer(
+                                msg["content"],
+                                reply_markup=create_inline_keyboard(temp_buttons)
+                            )
+                        elif msg["type"] == "photo":
+                            await message.answer("**Final Preview:**")
+                            await message.answer_photo(
+                                photo=msg["content"]["file_id"],
+                                caption=msg["content"].get("caption", ""),
+                                reply_markup=create_inline_keyboard(temp_buttons)
+                            )
+        
+        await state.clear()
+        await message.answer(
+            "✅ Inline ခလုတ်များ ထည့်ပြီးပါပြီ။",
+            reply_markup=get_main_menu_keyboard(message.from_user.id)
+        )
         return
     
-    text = f"**{btn_name}** အတွက် Message များ:\n\n"
-    for i, msg in enumerate(messages, 1):
-        msg_type = msg["type"]
-        if msg_type == "text":
-            preview = msg["content"][:50] + "..." if len(msg["content"]) > 50 else msg["content"]
+    # Add button to temp list
+    if "|" in message.text:
+        name, value = message.text.split("|", 1)
+        name = name.strip()
+        value = value.strip()
+        
+        if value.startswith("http"):
+            temp_buttons.append({"text": name, "url": value})
+            await message.answer(f"✅ URL ခလုတ် '{name}' ထည့်ပြီးပါပြီ။")
+        elif value.startswith("callback:"):
+            callback_data = value[9:]
+            temp_buttons.append({"text": name, "callback": callback_data})
+            await message.answer(f"✅ Callback ခလုတ် '{name}' ထည့်ပြီးပါပြီ။")
         else:
-            preview = f"[Photo] {msg['content'].get('caption', '')[:30]}..."
-        btn_count = len(msg.get("buttons", []))
-        text += f"{i}. {msg_type}: {preview} (ခလုတ် {btn_count} ခု)\n"
+            temp_buttons.append({"text": name, "callback": value})
+            await message.answer(f"✅ ခလုတ် '{name}' ထည့်ပြီးပါပြီ။")
+    else:
+        temp_buttons.append({"text": message.text, "callback": "none"})
+        await message.answer(f"✅ ခလုတ် '{message.text}' ထည့်ပြီးပါပြီ။")
     
-    await message.answer(text)
+    await state.update_data(temp_buttons=temp_buttons)
+    await message.answer("နောက်ထပ်ထည့်ချင်ရင် ဆက်ရိုက်ပါ။\nအကုန်ပြီးရင် `done` ရိုက်ပါ။")
+
+@dp.message(F.text.in_(["⬅️", "⬇️", "⬆️", "➡️"]), F.state == "*")
+async def move_inline_button(message: Message, state: FSMContext):
+    """Move inline button in message"""
+    data = await state.get_data()
+    msg_id = data.get("current_message_id")
+    btn_id = data.get("current_button_id") or data.get("adding_to_button")
+    
+    # This would need to know which inline button to move
+    # For simplicity, we'll just acknowledge
+    await message.answer("Inline ခလုတ်နေရာရွှေ့ရန် - ခလုတ်အညွှန်းကို ရွေးချယ်ရန်လိုပါသည်။")
+
+# ============================
+# STOP EDITORS
+# ============================
+
+@dp.message(F.text == "⏹ Stop Edit")
+async def stop_button_edit(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    await state.clear()
+    user_modes[user_id] = "button_edit"
+    await message.answer(
+        "Button Edit Mode ကိုပြန်ရောက်ပါပြီ။",
+        reply_markup=get_main_menu_keyboard(user_id)
+    )
+
+@dp.message(F.text == "⏹ Stop Editor")
+async def stop_post_edit(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    await state.clear()
+    user_modes[user_id] = "post_edit"
+    await message.answer(
+        "Post Edit Mode ကိုပြန်ရောက်ပါပြီ။",
+        reply_markup=get_main_menu_keyboard(user_id)
+    )
 
 # ============================
 # WELCOME EDITOR
@@ -895,10 +1066,11 @@ async def add_welcome_button(message: Message, state: FSMContext):
     await message.answer(
         "Welcome Message အောက်မှာထည့်မယ့် Inline Button ကို ရိုက်ထည့်ပါ။\n\n"
         "**URL ခလုတ်:** ခလုတ်နာမည်|URL\n"
-        "ဥပမာ: Main Channel|https://t.me/...\n\n"
-        "**သာမန်ခလုတ်:** ခလုတ်နာမည်\n"
-        "ဥပမာ: Info\n\n"
-        "ပြီးရင် 'done' လို့ရိုက်ပါ။"
+        "ဥပမာ: `Main Channel|https://t.me/...`\n\n"
+        "**Callback ခလုတ်:** ခလုတ်နာမည်|callback:data\n"
+        "ဥပမာ: `Info|callback:info`\n\n"
+        "ခလုတ်တစ်ခုထည့်ပြီးရင် Enter နှိပ်ပါ။\n"
+        "အကုန်ပြီးရင် `done` လို့ရိုက်ပါ။"
     )
     await state.update_data(temp_buttons=[])
     await state.set_state(BotStates.waiting_welcome_buttons)
@@ -916,14 +1088,26 @@ async def process_welcome_button(message: Message, state: FSMContext):
         return
     
     if "|" in message.text:
-        name, url = message.text.split("|", 1)
-        temp_buttons.append({"text": name.strip(), "url": url.strip()})
-        await message.answer(f"✅ '{name.strip()}' URL ခလုတ်ထည့်ပြီးပါပြီ။\nနောက်ထပ်ထည့်ချင်ရင် ဆက်ရိုက်ပါ။\nအကုန်ပြီးရင် 'done' ရိုက်ပါ။")
+        name, value = message.text.split("|", 1)
+        name = name.strip()
+        value = value.strip()
+        
+        if value.startswith("http"):
+            temp_buttons.append({"text": name, "url": value})
+            await message.answer(f"✅ URL ခလုတ် '{name}' ထည့်ပြီးပါပြီ။")
+        elif value.startswith("callback:"):
+            callback_data = value[9:]
+            temp_buttons.append({"text": name, "callback": callback_data})
+            await message.answer(f"✅ Callback ခလုတ် '{name}' ထည့်ပြီးပါပြီ။")
+        else:
+            temp_buttons.append({"text": name, "callback": value})
+            await message.answer(f"✅ ခလုတ် '{name}' ထည့်ပြီးပါပြီ။")
     else:
         temp_buttons.append({"text": message.text, "callback": "none"})
-        await message.answer(f"✅ '{message.text}' ခလုတ်ထည့်ပြီးပါပြီ။\nနောက်ထပ်ထည့်ချင်ရင် ဆက်ရိုက်ပါ။\nအကုန်ပြီးရင် 'done' ရိုက်ပါ။")
+        await message.answer(f"✅ ခလုတ် '{message.text}' ထည့်ပြီးပါပြီ။")
     
     await state.update_data(temp_buttons=temp_buttons)
+    await message.answer("နောက်ထပ်ထည့်ချင်ရင် ဆက်ရိုက်ပါ။\nအကုန်ပြီးရင် `done` ရိုက်ပါ။")
 
 @dp.message(F.text == "👁 Preview Welcome")
 async def preview_welcome(message: Message):
@@ -996,221 +1180,48 @@ async def select_parent(message: Message, state: FSMContext):
     if message.text == "📋 Main Menu (Top Level)":
         bot_data.add_button(button_name, parent=None)
         await state.clear()
-        await message.answer(f"✅ '{button_name}' ကို ပင်မမီနူးမှာထည့်ပြီးပါပြီ။")
+        
+        # Go back to button edit mode
+        user_modes[message.from_user.id] = "button_edit"
+        await message.answer(
+            f"✅ '{button_name}' ကို ပင်မမီနူးမှာထည့်ပြီးပါပြီ။",
+            reply_markup=get_main_menu_keyboard(message.from_user.id)
+        )
     else:
         for btn in bot_data.get_main_buttons():
             if btn["name"] == message.text:
                 bot_data.add_button(button_name, parent=btn["id"])
                 await state.clear()
-                await message.answer(f"✅ '{button_name}' ကို '{btn['name']}' အောက်မှာထည့်ပြီးပါပြီ။")
+                
+                # Go back to button edit mode
+                user_modes[message.from_user.id] = "button_edit"
+                await message.answer(
+                    f"✅ '{button_name}' ကို '{btn['name']}' အောက်မှာထည့်ပြီးပါပြီ။",
+                    reply_markup=get_main_menu_keyboard(message.from_user.id)
+                )
                 return
-
-# ============================
-# BROADCAST
-# ============================
-
-@dp.message(F.text == "📢 Broadcast")
-async def broadcast_menu(message: Message):
-    user_id = message.from_user.id
-    if user_id != OWNER_ID:
-        return
-    
-    users_count = bot_data.get_users_count()
-    
-    buttons = [
-        [KeyboardButton(text="📝 Send Text")],
-        [KeyboardButton(text="🖼 Send Photo")],
-        [KeyboardButton(text="🔙 Back")]
-    ]
-    
-    await message.answer(
-        f"**📢 Broadcast**\n\n"
-        f"စုစုပေါင်းအသုံးပြုသူ: {users_count} ယောက်\n\n"
-        f"ဘာပို့ချင်လဲ ရွေးပါ။",
-        reply_markup=ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
-    )
-
-@dp.message(F.text == "📝 Send Text")
-async def broadcast_text_prompt(message: Message, state: FSMContext):
-    await message.answer(
-        "Broadcast ပို့မယ့် စာသားကို ရိုက်ထည့်ပါ။\n\n"
-        "Macros များ: {mention}, {fullname}, {username}, {user_id}, {date}, {time}\n\n"
-        "ပယ်ဖျက်ချင်ရင် /cancel ကိုသုံးပါ။"
-    )
-    await state.set_state(BotStates.waiting_broadcast_text)
-
-@dp.message(F.text == "🖼 Send Photo")
-async def broadcast_photo_prompt(message: Message, state: FSMContext):
-    await message.answer(
-        "Broadcast ပို့မယ့် ဓာတ်ပုံကို ပို့ပါ။\n"
-        "ဓာတ်ပုံနဲ့အတူ စာသားပါထည့်ချင်ရင် Caption မှာရေးပါ။\n\n"
-        "ပယ်ဖျက်ချင်ရင် /cancel ကိုသုံးပါ။"
-    )
-    await state.set_state(BotStates.waiting_broadcast_photo)
-
-@dp.message(BotStates.waiting_broadcast_text)
-async def process_broadcast_text(message: Message, state: FSMContext):
-    if message.text == "/cancel":
-        await state.clear()
-        await message.answer("ပယ်ဖျက်လိုက်သည်။")
-        return
-    
-    await state.update_data(broadcast_text=message.text)
-    
-    await message.answer(
-        "Inline ခလုတ်တွေ ထည့်ချင်ရင် အောက်ပါပုံစံအတိုင်း ရိုက်ထည့်ပါ။\n"
-        "မထည့်ချင်ရင် 'skip' လို့ရိုက်ပါ။\n\n"
-        "ပုံစံ: ခလုတ်နာမည်|URL, ခလုတ်2|url2"
-    )
-    await state.set_state(BotStates.waiting_broadcast_buttons)
-
-@dp.message(BotStates.waiting_broadcast_photo, F.photo)
-async def process_broadcast_photo(message: Message, state: FSMContext):
-    photo = message.photo[-1]
-    caption = message.caption or ""
-    
-    await state.update_data(
-        broadcast_photo=photo.file_id,
-        broadcast_caption=caption
-    )
-    
-    await message.answer(
-        "Inline ခလုတ်တွေ ထည့်ချင်ရင် အောက်ပါပုံစံအတိုင်း ရိုက်ထည့်ပါ။\n"
-        "မထည့်ချင်ရင် 'skip' လို့ရိုက်ပါ။\n\n"
-        "ပုံစံ: ခလုတ်နာမည်|URL, ခလုတ်2|url2"
-    )
-    await state.set_state(BotStates.waiting_broadcast_buttons)
-
-@dp.message(BotStates.waiting_broadcast_buttons)
-async def process_broadcast_buttons(message: Message, state: FSMContext):
-    data = await state.get_data()
-    buttons = []
-    
-    if message.text.lower() != "skip":
-        buttons = parse_buttons_text(message.text)
-    
-    await state.update_data(broadcast_buttons=buttons)
-    
-    # Show confirmation
-    users_count = bot_data.get_users_count()
-    
-    if "broadcast_text" in data:
-        preview = data["broadcast_text"][:100]
-        msg_type = "Text"
-    else:
-        preview = f"[Photo] {data.get('broadcast_caption', '')[:100]}"
-        msg_type = "Photo"
-    
-    confirm_text = (
-        f"**📢 Broadcast အချက်အလက်များ**\n\n"
-        f"**အမျိုးအစား:** {msg_type}\n"
-        f"**လက်ခံသူဦးရေ:** {users_count} ယောက်\n"
-        f"**ခလုတ်အရေအတွက်:** {len(buttons)} ခု\n\n"
-        f"**စာသား:**\n{preview}\n\n"
-        f"ပို့မှာသေချာပါသလား?"
-    )
-    
-    await message.answer(
-        confirm_text,
-        reply_markup=get_confirmation_keyboard()
-    )
-    await state.set_state(BotStates.waiting_broadcast_confirm)
-
-@dp.message(BotStates.waiting_broadcast_confirm, F.text == "✅ Confirm")
-async def confirm_broadcast(message: Message, state: FSMContext):
-    data = await state.get_data()
-    users = bot_data.get_all_users()
-    
-    await message.answer(f"📢 Broadcast စတင်နေပါပြီ... လူ {len(users)} ယောက်ဆီပို့နေပါတယ်။")
-    
-    sent = 0
-    failed = 0
-    
-    for i, user_id in enumerate(users):
-        try:
-            if "broadcast_text" in data:
-                formatted = format_text(data["broadcast_text"], message.from_user)
-                await bot.send_message(
-                    user_id,
-                    formatted,
-                    reply_markup=create_inline_keyboard(data.get("broadcast_buttons", []))
-                )
-            else:
-                caption = format_text(data.get("broadcast_caption", ""), message.from_user)
-                await bot.send_photo(
-                    user_id,
-                    photo=data["broadcast_photo"],
-                    caption=caption,
-                    reply_markup=create_inline_keyboard(data.get("broadcast_buttons", []))
-                )
-            sent += 1
-        except Exception as e:
-            failed += 1
-        
-        # Rate limit
-        if (i + 1) % 20 == 0:
-            await asyncio.sleep(1)
-    
-    await state.clear()
-    await message.answer(
-        f"**✅ Broadcast ပြီးဆုံးပါပြီ**\n\n"
-        f"စုစုပေါင်း: {len(users)} ယောက်\n"
-        f"ပို့ပြီး: {sent} ယောက်\n"
-        f"မအောင်မြင်: {failed} ယောက်"
-    )
-
-@dp.message(BotStates.waiting_broadcast_confirm, F.text == "❌ Cancel")
-async def cancel_broadcast(message: Message, state: FSMContext):
-    await state.clear()
-    await message.answer("❌ Broadcast ကို ပယ်ဖျက်လိုက်သည်။")
-
-# ============================
-# STATISTICS
-# ============================
-
-@dp.message(F.text == "📊 Statistics")
-async def show_statistics(message: Message):
-    user_id = message.from_user.id
-    if user_id != OWNER_ID:
-        return
-    
-    users = bot_data.get_all_users()
-    buttons_count = len(bot_data.get_all_buttons())
-    messages_count = 0
-    for btn in bot_data.get_all_buttons():
-        messages_count += len(btn.get("messages", []))
-    
-    welcome = bot_data.get_welcome()
-    
-    stats = (
-        f"**📊 စာရင်းအင်းများ**\n\n"
-        f"**👤 အသုံးပြုသူ**\n"
-        f"စုစုပေါင်း: {len(users)} ယောက်\n\n"
-        f"**🔧 ခလုတ်များ**\n"
-        f"စုစုပေါင်း: {buttons_count} ခု\n\n"
-        f"**📝 ပို့စ်များ**\n"
-        f"စုစုပေါင်း: {messages_count} ခု\n\n"
-        f"**👋 Welcome**\n"
-        f"အမျိုးအစား: {welcome['type']}\n"
-        f"Inline ခလုတ်: {len(welcome.get('buttons', []))} ခု"
-    )
-    
-    await message.answer(stats)
 
 # ============================
 # BACK BUTTON
 # ============================
 
 @dp.message(F.text == "🔙 Back")
-@dp.message(F.text == "🔙 Back to Main")
 async def go_back(message: Message, state: FSMContext):
     user_id = message.from_user.id
-    await state.clear()
-    user_modes[user_id] = "main"
-    await message.answer(
-        "ပင်မမီနူး",
-        reply_markup=get_main_menu_keyboard(user_id)
-    )
+    mode = user_modes.get(user_id, "main")
+    
+    if mode == "post_edit":
+        # Go back to post edit main menu
+        await message.answer(
+            "Post Edit Mode",
+            reply_markup=get_post_edit_buttons_keyboard()
+        )
+    else:
+        await state.clear()
+        await message.answer(
+            "ပင်မမီနူး",
+            reply_markup=get_main_menu_keyboard(user_id)
+        )
 
 # ============================
 # CANCEL HANDLER
@@ -1219,10 +1230,25 @@ async def go_back(message: Message, state: FSMContext):
 @dp.message(Command("cancel"))
 async def cancel_command(message: Message, state: FSMContext):
     await state.clear()
+    user_modes[message.from_user.id] = "main"
     await message.answer(
         "❌ လုပ်ဆောင်ချက်ကို ပယ်ဖျက်လိုက်သည်။",
         reply_markup=get_main_menu_keyboard(message.from_user.id)
     )
+
+# ============================
+# CALLBACK QUERY HANDLER
+# ============================
+
+@dp.callback_query()
+async def handle_callback(callback: CallbackQuery):
+    await callback.answer()
+    
+    data = callback.data
+    if data == "none":
+        return
+    
+    await callback.message.answer(f"Callback: {data}")
 
 # ============================
 # MAIN
@@ -1230,7 +1256,7 @@ async def cancel_command(message: Message, state: FSMContext):
 
 async def main():
     print("=" * 60)
-    print("🤖 နက်ပြ ဘော့တ် - Mode ၃ မျိုး")
+    print("🤖 နက်ပြ ဘော့တ် - Button Editor + Post Editor + Inline Editor")
     print("=" * 60)
     print(f"👤 Owner ID: {OWNER_ID}")
     print(f"👥 Users: {bot_data.get_users_count()}")
