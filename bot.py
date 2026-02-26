@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
     Message, 
-    CallbackQuery,  # ✅ ဒီမှာ CallbackQuery ကို ထည့်ထားပါတယ်
+    CallbackQuery,
     ReplyKeyboardMarkup, 
     KeyboardButton,
     InlineKeyboardMarkup, 
@@ -496,19 +496,33 @@ async def cmd_start(message: Message):
     # Format message with user data
     if welcome["type"] == "text":
         formatted = format_text(welcome["content"], user)
+        # ✅ Fixed: removed duplicate reply_markup
         await message.answer(
             formatted,
-            reply_markup=get_main_menu_keyboard(user_id),
-            reply_markup=create_inline_keyboard(welcome.get("buttons", []))
+            reply_markup=get_main_menu_keyboard(user_id)
         )
+        # Send inline buttons separately if they exist
+        inline_keyboard = create_inline_keyboard(welcome.get("buttons", []))
+        if inline_keyboard:
+            await message.answer(
+                "အောက်ပါခလုတ်များကို နှိပ်နိုင်ပါတယ်။",
+                reply_markup=inline_keyboard
+            )
     elif welcome["type"] == "photo":
         caption = format_text(welcome["content"].get("caption", ""), user)
+        # ✅ Fixed: removed duplicate reply_markup
         await message.answer_photo(
             photo=welcome["content"]["file_id"],
             caption=caption,
-            reply_markup=get_main_menu_keyboard(user_id),
-            reply_markup=create_inline_keyboard(welcome.get("buttons", []))
+            reply_markup=get_main_menu_keyboard(user_id)
         )
+        # Send inline buttons separately if they exist
+        inline_keyboard = create_inline_keyboard(welcome.get("buttons", []))
+        if inline_keyboard:
+            await message.answer(
+                "အောက်ပါခလုတ်များကို နှိပ်နိုင်ပါတယ်။",
+                reply_markup=inline_keyboard
+            )
 
 # ============================
 # HANDLERS - MODE TOGGLE
