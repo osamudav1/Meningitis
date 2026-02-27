@@ -21,9 +21,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ==================== CONFIGURATION ====================
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
-OWNER_ID = 123456789  # Replace with your Telegram ID
-GROUP_ID = -100123456789  # Replace with your Group ID
+BOT_TOKEN = os.environ.get('BOT_TOKEN')
+OWNER_ID = int(os.environ.get('OWNER_ID', 0))
+GROUP_ID = int(os.environ.get('GROUP_ID', 0))
 
 # ==================== DATABASE ====================
 class Database:
