@@ -10,7 +10,8 @@ from contextlib import contextmanager
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import (
-    Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+    Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
+    ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 )
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -26,6 +27,13 @@ import os
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 OWNER_ID = int(os.environ.get('OWNER_ID', 0))
 GROUP_ID = int(os.environ.get('GROUP_ID', 0))
+
+print(f"BOT_TOKEN from env: {BOT_TOKEN}")
+print(f"OWNER_ID from env: {OWNER_ID}")
+print(f"GROUP_ID from env: {GROUP_ID}")
+
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN environment variable not set!")
 
 # ==================== DATABASE ====================
 class Database:
@@ -108,7 +116,10 @@ class AdminStates(StatesGroup):
     waiting_for_channel_name = State()
 
 class UserStates(StatesGroup):
-    waiting_for_withdraw_info = State()
+    waiting_for_payment_method = State()
+    waiting_for_account_name = State()
+    waiting_for_phone = State()
+    waiting_for_withdraw_amount = State()
 
 # ==================== INITIALIZE ====================
 db = Database()
@@ -127,6 +138,12 @@ def main_menu_keyboard():
             InlineKeyboardButton(text="📊 My Info", callback_data="my_info"),
             InlineKeyboardButton(text="👥 Invite", callback_data="invite")
         ]
+    ])
+    return keyboard
+
+def back_button_keyboard():
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 Back", callback_data="back_to_main")]
     ])
     return keyboard
 
@@ -242,6 +259,11 @@ async def check_join_callback(callback: CallbackQuery):
     else:
         await callback.answer("ကျေးဇူးပြု၍ Channel များကို Join ပါ။", show_alert=True)
 
+@dp.callback_query(F.data == "back_to_main")
+async def back_to_main(callback: CallbackQuery):
+    await callback.message.delete()
+    await cmd_start(callback.message)
+
 # ==================== MY INFO ====================
 @dp.callback_query(F.data == "my_info")
 async def my_info(callback: CallbackQuery):
@@ -267,7 +289,7 @@ async def my_info(callback: CallbackQuery):
 ━━━━━━━━━━━━━━━━
         """
         
-        await callback.message.edit_text(info_text, reply_markup=main_menu_keyboard())
+        await callback.message.edit_text(info_text, reply_markup=back_button_keyboard())
 
 # ==================== INVITE SYSTEM ====================
 @dp.callback_query(F.data == "invite")
@@ -417,7 +439,19 @@ async def play_game(callback: CallbackQuery):
             (user_id, user['username'], user['full_name'], game_amount, datetime.now().isoformat(), today)
         )
         
-        await callback.answer(f"ဂုဏ်ယူပါတယ်။ သင်ကံစမ်းရရှိငွေ {game_amount} ကျပ်", show_alert=True)
+        # Send game result to user
+        game_result_text = f"""
+🎲 **ကံစမ်းရလဒ်**
+━━━━━━━━━━━━━━━━
+👤 နာမည် - {user['full_name']}
+💰 ရရှိငွေ - {game_amount} ကျပ်
+💵 လက်ကျန်ငွေ - {user['balance'] + game_amount} ကျပ်
+⏰ အချိန် - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+━━━━━━━━━━━━━━━━
+✨ ဆက်လက်ကံစမ်းရန် ကံစမ်းမည်ကိုနှိပ်ပါ။
+        """
+        
+        await callback.message.edit_text(game_result_text, reply_markup=main_menu_keyboard())
         
         # Check if game amount finished
         if new_amount <= 0:
@@ -455,41 +489,104 @@ async def withdraw_start(callback: CallbackQuery, state: FSMContext):
     with db.get_connection() as conn:
         user = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
         
-        if not user or user['balance'] < 100:  # Minimum withdraw 100
+        if not user or user['balance'] < 100:
             await callback.answer("အနည်းဆုံး 100 ကျပ်ရှိမှထုတ်နိုင်ပါသည်။", show_alert=True)
             return
     
+    # Payment method selection
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="💳 KPay", callback_data="pay_kpay"),
+            InlineKeyboardButton(text="🏦 Wave", callback_data="pay_wave")
+        ],
+        [InlineKeyboardButton(text="🔙 Back", callback_data="back_to_main")]
+    ])
+    
     await callback.message.edit_text(
         "💰 **ငွေထုတ်ယူရန်**\n\n"
-        "ကျေးဇူးပြု၍ သင့် KPay/Wave နာမည်နှင့် ဖုန်းနံပါတ်ကို ရိုက်ထည့်ပါ။\n"
-        "ပုံစံ - နာမည်၊ဖုန်းနံပါတ်\n"
-        "ဥပမာ - မောင်မောင်၊၀၉၄၂၈၅၆၃၆၃"
+        "ကျေးဇူးပြု၍ သင့်ငွေလက်ခံမည့်နည်းလမ်းကို ရွေးချယ်ပါ။",
+        reply_markup=keyboard
     )
-    await state.set_state(UserStates.waiting_for_withdraw_info)
 
-@dp.message(UserStates.waiting_for_withdraw_info)
-async def process_withdraw_info(message: Message, state: FSMContext):
+@dp.callback_query(F.data.startswith("pay_"))
+async def withdraw_payment_method(callback: CallbackQuery, state: FSMContext):
+    method = callback.data.split("_")[1]  # kpay or wave
+    
+    # Save payment method to state
+    await state.update_data(payment_method=method.upper())
+    
+    await callback.message.edit_text(
+        f"💳 **{method.upper()} ငွေထုတ်ယူရန်**\n\n"
+        "ကျေးဇူးပြု၍ သင့် အကောင့်နာမည် ကို ရိုက်ထည့်ပါ။\n"
+        f"ဥပမာ - {method.upper()} အကောင့်နာမည်"
+    )
+    await state.set_state(UserStates.waiting_for_account_name)
+
+@dp.message(UserStates.waiting_for_account_name)
+async def process_account_name(message: Message, state: FSMContext):
+    account_name = message.text.strip()
+    
+    # Save account name to state
+    await state.update_data(account_name=account_name)
+    
+    await message.answer(
+        "📞 **ဖုန်းနံပါတ် ထည့်ပါ**\n\n"
+        "ကျေးဇူးပြု၍ သင့် ဖုန်းနံပါတ် ကို ရိုက်ထည့်ပါ။\n"
+        "ဥပမာ - 09793251923"
+    )
+    await state.set_state(UserStates.waiting_for_phone)
+
+@dp.message(UserStates.waiting_for_phone)
+async def process_phone(message: Message, state: FSMContext):
+    phone = message.text.strip()
+    
+    # Save phone to state
+    await state.update_data(phone=phone)
+    
+    user_id = message.from_user.id
+    
+    with db.get_connection() as conn:
+        user = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
+    
+    await message.answer(
+        f"💰 **ငွေပမာဏ ထည့်ပါ**\n\n"
+        f"သင့်လက်ကျန်ငွေ: {user['balance']} ကျပ်\n"
+        f"ထုတ်ယူလိုသောငွေပမာဏကို ရိုက်ထည့်ပါ။"
+    )
+    await state.set_state(UserStates.waiting_for_withdraw_amount)
+
+@dp.message(UserStates.waiting_for_withdraw_amount)
+async def process_withdraw_amount(message: Message, state: FSMContext):
     try:
-        name, phone = message.text.split(',')
-        name = name.strip()
-        phone = phone.strip()
+        withdraw_amount = int(message.text.strip())
         
         user_id = message.from_user.id
         username = message.from_user.username or "No username"
         full_name = message.from_user.full_name
         
+        # Get data from state
+        data = await state.get_data()
+        payment_method = data.get('payment_method', 'KPay')
+        account_name = data.get('account_name', '')
+        phone = data.get('phone', '')
+        
         with db.get_connection() as conn:
             user = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
             
-            if user['balance'] < 100:
-                await message.answer("အနည်းဆုံး 100 ကျပ်ရှိမှထုတ်နိုင်ပါသည်။")
+            if withdraw_amount > user['balance']:
+                await message.answer(f"သင့်လက်ကျန်ငွေ {user['balance']} ကျပ်သာရှိသည်။ ထပ်မံကြိုးစားပါ။")
+                await state.clear()
+                return
+            
+            if withdraw_amount < 100:
+                await message.answer("အနည်းဆုံး 100 ကျပ်မှ ထုတ်ယူနိုင်ပါသည်။")
                 await state.clear()
                 return
             
             # Update user phone and name
             conn.execute(
                 "UPDATE users SET phone = ?, kpay_name = ? WHERE user_id = ?",
-                (phone, name, user_id)
+                (phone, account_name, user_id)
             )
             
             # Send to owner
@@ -499,8 +596,9 @@ async def process_withdraw_info(message: Message, state: FSMContext):
 👤 အမည် - {full_name}
 🆔 User ID - `{user_id}`
 🔗 Username - @{username}
-💰 ထုတ်ယူမည့်ငွေ - {user['balance']} ကျပ်
-💳 ငွေလက်ခံမည့် အကောင့် - {name}
+💰 ထုတ်ယူမည့်ငွေ - {withdraw_amount} ကျပ်
+💳 ငွေလက်ခံမည့် အကောင့် - {payment_method}
+📝 အကောင့်နာမည် - {account_name}
 📞 ဖုန်းနံပါတ် - {phone}
 💵 လက်ကျန်ငွေ - {user['balance']} ကျပ်
 ━━━━━━━━━━━━━━━━
@@ -508,21 +606,21 @@ async def process_withdraw_info(message: Message, state: FSMContext):
             
             confirm_keyboard = InlineKeyboardMarkup(inline_keyboard=[
                 [
-                    InlineKeyboardButton(text="✅ Confirm", callback_data=f"confirm_withdraw_{user_id}"),
+                    InlineKeyboardButton(text="✅ Confirm", callback_data=f"confirm_withdraw_{user_id}_{withdraw_amount}"),
                     InlineKeyboardButton(text="❌ Cancel", callback_data=f"cancel_withdraw_{user_id}")
                 ]
             ])
             
             await bot.send_message(OWNER_ID, withdraw_text, reply_markup=confirm_keyboard)
             
-        await message.answer("သင်၏တောင်းဆိုချက်ကို Owner ထံပို့လိုက်ပါပြီ။ ခွင့်ပြုချက်စောင့်ဆိုင်းပါ။")
+        await message.answer("✅ သင်၏တောင်းဆိုချက်ကို Owner ထံပို့လိုက်ပါပြီ။ ခွင့်ပြုချက်စောင့်ဆိုင်းပါ။")
         await state.clear()
         
         # Show main menu again
         await message.answer("Main Menu", reply_markup=main_menu_keyboard())
             
-    except Exception as e:
-        await message.answer("ပုံစံမှားနေပါသည်။ နမူနာလိုက်ပါ။ နာမည်၊ဖုန်းနံပါတ်")
+    except ValueError:
+        await message.answer("ကျေးဇူးပြု၍ ငွေပမာဏကို ဂဏန်းသာရိုက်ထည့်ပါ။")
 
 # ==================== ADMIN COMMANDS ====================
 @dp.message(Command("admin"))
@@ -808,18 +906,15 @@ async def admin_back(callback: CallbackQuery):
     
     await admin_panel(callback.message)
 
-@dp.callback_query(F.data == "back_to_main")
-async def back_to_main(callback: CallbackQuery):
-    await callback.message.delete()
-    await cmd_start(callback.message)
-
 # ==================== WITHDRAW CONFIRM CALLBACKS ====================
 @dp.callback_query(F.data.startswith("confirm_withdraw_"))
 async def confirm_withdraw(callback: CallbackQuery):
     if callback.from_user.id != OWNER_ID:
         return
     
-    user_id = int(callback.data.split("_")[2])
+    parts = callback.data.split("_")
+    user_id = int(parts[2])
+    withdraw_amount = int(parts[3])
     
     with db.get_connection() as conn:
         user = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
@@ -828,15 +923,14 @@ async def confirm_withdraw(callback: CallbackQuery):
             await callback.answer("User not found!")
             return
         
-        withdraw_amount = user['balance']
-        
         # Generate transfer ID
         transfer_id = f"TRX{random.randint(100000, 999999)}"
         
         # Update user balance (deduct)
+        new_balance = user['balance'] - withdraw_amount
         conn.execute(
-            "UPDATE users SET balance = 0 WHERE user_id = ?",
-            (user_id,)
+            "UPDATE users SET balance = ? WHERE user_id = ?",
+            (new_balance, user_id)
         )
         
         # Send receipt to user
