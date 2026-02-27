@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Union
 import sqlite3
 import random
@@ -55,7 +55,8 @@ class Database:
                 last_game_time TEXT,
                 phone TEXT,
                 kpay_name TEXT,
-                join_date TEXT
+                join_date TEXT,
+                has_played BOOLEAN DEFAULT 0
             )''')
             
             # Game settings table
@@ -63,7 +64,8 @@ class Database:
                 id INTEGER PRIMARY KEY CHECK (id=1),
                 total_amount INTEGER DEFAULT 0,
                 current_amount INTEGER DEFAULT 0,
-                game_active INTEGER DEFAULT 0
+                game_active INTEGER DEFAULT 0,
+                game_date TEXT
             )''')
             
             # Game winners table
@@ -73,7 +75,8 @@ class Database:
                 username TEXT,
                 full_name TEXT,
                 amount INTEGER,
-                win_time TEXT
+                win_time TEXT,
+                game_date TEXT
             )''')
             
             # Force channels table
@@ -85,6 +88,14 @@ class Database:
                 added_date TEXT
             )''')
             
+            # Referral table
+            conn.execute('''CREATE TABLE IF NOT EXISTS referrals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                referrer_id INTEGER,
+                referred_id INTEGER UNIQUE,
+                referred_date TEXT
+            )''')
+            
             # Insert default game settings
             conn.execute("INSERT OR IGNORE INTO game_settings (id) VALUES (1)")
 
@@ -93,8 +104,6 @@ class AdminStates(StatesGroup):
     waiting_for_amount = State()
     waiting_for_channel_link = State()
     waiting_for_channel_name = State()
-    waiting_for_withdraw_name = State()
-    waiting_for_withdraw_phone = State()
 
 class UserStates(StatesGroup):
     waiting_for_withdraw_info = State()
@@ -160,14 +169,48 @@ async def cmd_start(message: Message):
     username = message.from_user.username or "No username"
     full_name = message.from_user.full_name
     
+    # Extract referrer from start command
+    referrer_id = None
+    if message.text and len(message.text.split()) > 1:
+        try:
+            referrer_id = int(message.text.split()[1].replace("ref_", ""))
+        except:
+            pass
+    
     # Add user to database if not exists
     with db.get_connection() as conn:
         user = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
         if not user:
             conn.execute(
-                "INSERT INTO users (user_id, username, full_name, join_date) VALUES (?, ?, ?, ?)",
-                (user_id, username, full_name, datetime.now().isoformat())
+                """INSERT INTO users 
+                   (user_id, username, full_name, join_date, has_played) 
+                   VALUES (?, ?, ?, ?, ?)""",
+                (user_id, username, full_name, datetime.now().isoformat(), 0)
             )
+            
+            # Handle referral
+            if referrer_id and referrer_id != user_id:
+                # Check if already referred
+                existing = conn.execute(
+                    "SELECT * FROM referrals WHERE referred_id = ?", 
+                    (user_id,)
+                ).fetchone()
+                
+                if not existing:
+                    # Add referral
+                    conn.execute(
+                        "INSERT INTO referrals (referrer_id, referred_id, referred_date) VALUES (?, ?, ?)",
+                        (referrer_id, user_id, datetime.now().isoformat())
+                    )
+                    
+                    # Update referrer's invite count and balance
+                    conn.execute(
+                        """UPDATE users SET 
+                           total_invite = total_invite + 1,
+                           balance = balance + 50
+                           WHERE user_id = ?""",
+                        (referrer_id,)
+                    )
     
     # Check force channels
     joined, not_joined = await check_channels(user_id)
@@ -218,6 +261,7 @@ async def my_info(callback: CallbackQuery):
 💰 လက်ကျန်ငွေ - {user['balance']} ကျပ်
 🎲 နောက်ဆုံးကံစမ်းခဲ့သည့်ငွေ - {user['last_game_amount']} ကျပ်
 ⏰ နောက်ဆုံးကံစမ်းခဲ့သည့်အချိန် - {user['last_game_time'] or 'မရှိသေးပါ'}
+📅 ယနေ့ကံစမ်းပြီးပြီလား - {'ပြီးပါပြီ' if user['has_played'] else 'မရှိသေးပါ'}
 ━━━━━━━━━━━━━━━━
         """
         
@@ -254,7 +298,7 @@ async def invite_link(callback: CallbackQuery):
         
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📋 Copy Link", callback_data=f"copy_{invite_link}")],
-            [InlineKeyboardButton(text="🔙 Back", reply_to="back_to_main")]
+            [InlineKeyboardButton(text="🔙 Back", callback_data="back_to_main")]
         ])
         
         await callback.message.edit_text(invite_text, reply_markup=keyboard)
@@ -307,6 +351,7 @@ async def request_limit(callback: CallbackQuery):
 @dp.callback_query(F.data == "play_game")
 async def play_game(callback: CallbackQuery):
     user_id = callback.from_user.id
+    today = datetime.now().strftime("%Y-%m-%d")
     
     # Check force channels first
     joined, not_joined = await check_channels(user_id)
@@ -320,13 +365,21 @@ async def play_game(callback: CallbackQuery):
     
     with db.get_connection() as conn:
         game = conn.execute("SELECT * FROM game_settings WHERE id = 1").fetchone()
+        user = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
         
+        # Check if game is active
         if not game['game_active']:
             await callback.answer("ဂိမ်းမစတင်သေးပါ။ Owner စတင်ရန်စောင့်ဆိုင်းပါ။", show_alert=True)
             return
         
+        # Check if game amount is available
         if game['current_amount'] <= 0:
             await callback.answer("ကံစမ်းငွေကုန်သွားပါပြီ။ နောက်ရက်မှကံစမ်းပါ။", show_alert=True)
+            return
+        
+        # Check if user already played today
+        if user['has_played']:
+            await callback.answer("ယနေ့အတွက် သင်ကံစမ်းပြီးပါပြီ။ နောက်ရက်မှပြန်ကံစမ်းပါ။", show_alert=True)
             return
         
         # Random amount between 100 and 500
@@ -343,22 +396,23 @@ async def play_game(callback: CallbackQuery):
             (new_amount,)
         )
         
+        # Update user: add balance, mark as played today
         conn.execute(
             """UPDATE users SET 
                balance = balance + ?,
                last_game_amount = ?,
-               last_game_time = ?
+               last_game_time = ?,
+               has_played = 1
                WHERE user_id = ?""",
             (game_amount, game_amount, datetime.now().isoformat(), user_id)
         )
         
         # Save winner
-        user = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
         conn.execute(
             """INSERT INTO game_winners 
-               (user_id, username, full_name, amount, win_time) 
-               VALUES (?, ?, ?, ?, ?)""",
-            (user_id, user['username'], user['full_name'], game_amount, datetime.now().isoformat())
+               (user_id, username, full_name, amount, win_time, game_date) 
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (user_id, user['username'], user['full_name'], game_amount, datetime.now().isoformat(), today)
         )
         
         await callback.answer(f"ဂုဏ်ယူပါတယ်။ သင်ကံစမ်းရရှိငွေ {game_amount} ကျပ်", show_alert=True)
@@ -368,13 +422,14 @@ async def play_game(callback: CallbackQuery):
             # Update game inactive
             conn.execute("UPDATE game_settings SET game_active = 0 WHERE id = 1")
             
-            # Get all winners
+            # Get all winners for today
             winners = conn.execute(
-                "SELECT * FROM game_winners ORDER BY win_time DESC"
+                "SELECT * FROM game_winners WHERE game_date = ? ORDER BY win_time DESC",
+                (today,)
             ).fetchall()
             
             # Send winners list to owner
-            winners_text = "📊 **ဂိမ်းပြီးဆုံးချိန် ရလဒ်များ**\n\n"
+            winners_text = f"📊 **ယနေ့ဂိမ်းပြီးဆုံးချိန် ရလဒ်များ ({today})**\n\n"
             total_given = 0
             
             for w in winners:
@@ -398,8 +453,8 @@ async def withdraw_start(callback: CallbackQuery, state: FSMContext):
     with db.get_connection() as conn:
         user = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
         
-        if not user or user['balance'] <= 0:
-            await callback.answer("သင့်တွင်ငွေမရှိပါ။", show_alert=True)
+        if not user or user['balance'] < 100:  # Minimum withdraw 100
+            await callback.answer("အနည်းဆုံး 100 ကျပ်ရှိမှထုတ်နိုင်ပါသည်။", show_alert=True)
             return
     
     await callback.message.edit_text(
@@ -424,6 +479,11 @@ async def process_withdraw_info(message: Message, state: FSMContext):
         with db.get_connection() as conn:
             user = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
             
+            if user['balance'] < 100:
+                await message.answer("အနည်းဆုံး 100 ကျပ်ရှိမှထုတ်နိုင်ပါသည်။")
+                await state.clear()
+                return
+            
             # Update user phone and name
             conn.execute(
                 "UPDATE users SET phone = ?, kpay_name = ? WHERE user_id = ?",
@@ -438,7 +498,7 @@ async def process_withdraw_info(message: Message, state: FSMContext):
 🆔 User ID - `{user_id}`
 🔗 Username - @{username}
 💰 ထုတ်ယူမည့်ငွေ - {user['balance']} ကျပ်
-💳 ငွေလက်ခံမည့် အကောင့် - KPay/Wave
+💳 ငွေလက်ခံမည့် အကောင့် - {name}
 📞 ဖုန်းနံပါတ် - {phone}
 💵 လက်ကျန်ငွေ - {user['balance']} ကျပ်
 ━━━━━━━━━━━━━━━━
@@ -479,7 +539,7 @@ async def admin_panel(message: Message):
         ],
         [
             InlineKeyboardButton(text="🎮 ဂိမ်းစတင်ရန်", callback_data="admin_start_game"),
-            InlineKeyboardButton(text="⏹ ဂိမ်းရပ်ရန်", callback_data="admin_stop_game")
+            InlineKeyboardButton(text="🔄 Reset User Plays", callback_data="admin_reset_plays")
         ]
     ])
     
@@ -506,6 +566,7 @@ async def process_add_amount(message: Message, state: FSMContext):
     
     try:
         amount = int(message.text)
+        today = datetime.now().strftime("%Y-%m-%d")
         
         with db.get_connection() as conn:
             game = conn.execute("SELECT * FROM game_settings WHERE id = 1").fetchone()
@@ -513,8 +574,8 @@ async def process_add_amount(message: Message, state: FSMContext):
             new_current = game['current_amount'] + amount
             
             conn.execute(
-                "UPDATE game_settings SET total_amount = ?, current_amount = ? WHERE id = 1",
-                (new_total, new_current)
+                "UPDATE game_settings SET total_amount = ?, current_amount = ?, game_date = ? WHERE id = 1",
+                (new_total, new_current, today)
             )
         
         await message.answer(f"✅ ငွေထည့်ပြီးပါပြီ။ လက်ရှိငွေ: {new_current} ကျပ်")
@@ -540,15 +601,16 @@ async def admin_start_game(callback: CallbackQuery):
     await callback.answer("ဂိမ်းစတင်ပါပြီ။")
     await admin_panel(callback.message)
 
-@dp.callback_query(F.data == "admin_stop_game")
-async def admin_stop_game(callback: CallbackQuery):
+@dp.callback_query(F.data == "admin_reset_plays")
+async def admin_reset_plays(callback: CallbackQuery):
     if callback.from_user.id != OWNER_ID:
         return
     
     with db.get_connection() as conn:
-        conn.execute("UPDATE game_settings SET game_active = 0 WHERE id = 1")
+        # Reset all users' has_played status for new day
+        conn.execute("UPDATE users SET has_played = 0")
     
-    await callback.answer("ဂိမ်းရပ်နားထားပါသည်။")
+    await callback.answer("ယနေ့အတွက် User အားလုံး ကံစမ်းခွင့်ပြန်ရပါပြီ။")
     await admin_panel(callback.message)
 
 @dp.callback_query(F.data == "admin_game_status")
@@ -558,6 +620,9 @@ async def admin_game_status(callback: CallbackQuery):
     
     with db.get_connection() as conn:
         game = conn.execute("SELECT * FROM game_settings WHERE id = 1").fetchone()
+        today_players = conn.execute(
+            "SELECT COUNT(*) as count FROM users WHERE has_played = 1"
+        ).fetchone()['count']
     
     status_text = f"""
 📊 **Game Status**
@@ -565,6 +630,8 @@ async def admin_game_status(callback: CallbackQuery):
 💰 စုစုပေါင်းငွေ - {game['total_amount']} ကျပ်
 💵 လက်ကျန်ငွေ - {game['current_amount']} ကျပ်
 🎮 ဂိမ်းအခြေအနေ - {'ဖွင့်ထားသည်' if game['game_active'] else 'ပိတ်ထားသည်'}
+👥 ယနေ့ကစားသူ - {today_players} ယောက်
+📅 ဂိမ်းရက်စွဲ - {game['game_date'] or 'မသတ်မှတ်ရသေး'}
 ━━━━━━━━━━━━━━━━
     """
     
@@ -587,6 +654,10 @@ async def admin_stats(callback: CallbackQuery):
         channels = conn.execute("SELECT COUNT(*) as count FROM force_channels").fetchone()['count']
         total_winners = conn.execute("SELECT COUNT(*) as count FROM game_winners").fetchone()['count']
         total_given = conn.execute("SELECT SUM(amount) as total FROM game_winners").fetchone()['total'] or 0
+        today_winners = conn.execute(
+            "SELECT COUNT(*) as count FROM game_winners WHERE game_date = ?",
+            (datetime.now().strftime("%Y-%m-%d"),)
+        ).fetchone()['count']
     
     stats_text = f"""
 📈 **Bot Statistics**
@@ -597,6 +668,7 @@ async def admin_stats(callback: CallbackQuery):
 🔐 Force Channels - {channels} ခု
 🏆 စုစုပေါင်းဆုရှင် - {total_winners} ဦး
 💸 စုစုပေါင်းပေးအပ်ငွေ - {total_given} ကျပ်
+📅 ယနေ့ဆုရှင် - {today_winners} ဦး
 ━━━━━━━━━━━━━━━━
     """
     
@@ -626,7 +698,8 @@ async def admin_force(callback: CallbackQuery):
     await callback.message.edit_text(
         "🔐 **Force Channel Settings**\n\n"
         "Channel တွေထည့်ရန် Add Channel ကိုနှိပ်ပါ။\n"
-        "Channel တွေကြည့်ရန် List Channels ကိုနှိပ်ပါ။",
+        "Channel တွေကြည့်ရန် List Channels ကိုနှိပ်ပါ။\n\n"
+        "Bot ကို Channel မှာ Admin လုပ်ထားရန်မမေ့ပါနှင့်။",
         reply_markup=keyboard
     )
 
@@ -654,10 +727,19 @@ async def force_add_channel_name(message: Message, state: FSMContext):
     channel_name = message.text.strip()
     data = await state.get_data()
     
-    # Extract channel ID from link
-    channel_username = data['channel_link'].split('/')[-1]
-    
+    # Extract channel username from link
     try:
+        if "t.me/" in data['channel_link']:
+            channel_username = data['channel_link'].split('/')[-1]
+            if channel_username.startswith('+'):
+                # Private channel
+                await message.answer("Private Channel များအတွက် Channel ID ကိုတိုက်ရိုက်ထည့်ရန်လိုအပ်ပါသည်။")
+                return
+        else:
+            # Maybe it's already an ID
+            channel_username = data['channel_link']
+        
+        # Try to get chat info
         chat = await bot.get_chat(f"@{channel_username}")
         channel_id = str(chat.id)
         
@@ -667,11 +749,11 @@ async def force_add_channel_name(message: Message, state: FSMContext):
                 (channel_id, channel_name, data['channel_link'], datetime.now().isoformat())
             )
         
-        await message.answer(f"✅ Channel {channel_name} added successfully!\n\nBot ကို Channel မှာ Admin လုပ်ထားရန်မမေ့ပါနှင့်။")
+        await message.answer(f"✅ Channel {channel_name} added successfully!")
         await state.clear()
         
     except Exception as e:
-        await message.answer(f"❌ Error: {str(e)}\n\nChannel ID ရှာမတွေ့ပါ။ Bot ကို Channel မှာ Admin လုပ်ထားကြောင်းစစ်ပါ။")
+        await message.answer(f"❌ Error: {str(e)}\n\nBot ကို Channel မှာ Admin လုပ်ထားကြောင်းစစ်ပါ။")
 
 @dp.callback_query(F.data == "force_list")
 async def force_list(callback: CallbackQuery):
@@ -692,7 +774,8 @@ async def force_list(callback: CallbackQuery):
     
     for i, channel in enumerate(channels, 1):
         text += f"{i}. {channel['channel_name']}\n"
-        text += f"   Link: {channel['channel_link']}\n\n"
+        text += f"   Link: {channel['channel_link']}\n"
+        text += f"   ID: `{channel['channel_id']}`\n\n"
         keyboard.append([InlineKeyboardButton(
             text=f"❌ Delete {channel['channel_name']}",
             callback_data=f"del_chan_{channel['id']}"
@@ -723,6 +806,11 @@ async def admin_back(callback: CallbackQuery):
     
     await admin_panel(callback.message)
 
+@dp.callback_query(F.data == "back_to_main")
+async def back_to_main(callback: CallbackQuery):
+    await callback.message.delete()
+    await cmd_start(callback.message)
+
 # ==================== WITHDRAW CONFIRM CALLBACKS ====================
 @dp.callback_query(F.data.startswith("confirm_withdraw_"))
 async def confirm_withdraw(callback: CallbackQuery):
@@ -737,6 +825,8 @@ async def confirm_withdraw(callback: CallbackQuery):
         if not user:
             await callback.answer("User not found!")
             return
+        
+        withdraw_amount = user['balance']
         
         # Generate transfer ID
         transfer_id = f"TRX{random.randint(100000, 999999)}"
@@ -753,9 +843,9 @@ async def confirm_withdraw(callback: CallbackQuery):
 ━━━━━━━━━━━━━━━━
 👤 ငွေထုတ်ယူသူအမည် - {user['full_name']}
 🆔 User ID - `{user['user_id']}`
-💰 ထုတ်ယူခဲ့သည့်ငွေ - {user['balance']} ကျပ်
+💰 ထုတ်ယူခဲ့သည့်ငွေ - {withdraw_amount} ကျပ်
 💳 ငွေပေးပို့သူအမည် - Owner
-📤 လွဲပေးခဲ့သည့်ငွေ - {user['balance']} ကျပ်
+📤 လွဲပေးခဲ့သည့်ငွေ - {withdraw_amount} ကျပ်
 ⏰ အချိန် - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 🔢 ပြေစာ Transfer ID - `{transfer_id}`
 ━━━━━━━━━━━━━━━━
@@ -765,10 +855,10 @@ async def confirm_withdraw(callback: CallbackQuery):
         await bot.send_message(user_id, receipt_text)
         
         # Send to group
-        group_text = f"{user['full_name']} နက် {user['balance']} ကျပ် ထုတ်ယူပြီးပါပြီ။ အကောင့်ထဲဝင်စစ်ပေးပါ။"
+        group_text = f"{user['full_name']} နက် {withdraw_amount} ကျပ် ထုတ်ယူပြီးပါပြီ။ အကောင့်ထဲဝင်စစ်ပေးပါ။"
         await bot.send_message(GROUP_ID, group_text)
     
-    await callback.message.edit_text(f"✅ Withdraw confirmed for user {user_id}")
+    await callback.message.edit_text(f"✅ Withdraw confirmed for user {user_id}\n\nငွေပမာဏ: {withdraw_amount} ကျပ်")
     await callback.answer("Withdraw confirmed!")
 
 @dp.callback_query(F.data.startswith("cancel_withdraw_"))
@@ -817,4 +907,21 @@ async def cancel_limit(callback: CallbackQuery):
     
     await bot.send_message(
         user_id,
-        "
+        "❌ သင်၏ Limit တိုးရန် တောင်းဆိုချက်ကို ပယ်ဖျက်လိုက်ပါသည်။"
+    )
+    
+    await callback.message.edit_text(f"✅ Limit request cancelled for user {user_id}")
+    await callback.answer("Limit cancelled!")
+
+# ==================== COPY LINK HANDLER ====================
+@dp.callback_query(F.data.startswith("copy_"))
+async def copy_link(callback: CallbackQuery):
+    link = callback.data[5:]
+    await callback.answer(f"Link copied: {link}", show_alert=True)
+
+# ==================== START BOT ====================
+async def main():
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
