@@ -1,848 +1,820 @@
-"""
-Telegram Anime/Movie Bot - Aiogram Version
-Screenshot အတိုင်း အသေးစိတ်ကျကျ - Full Code
-"""
-
 import asyncio
-import json
-import os
+import logging
 from datetime import datetime
-from typing import Dict, List, Any, Optional
+from typing import Union
+import sqlite3
+import random
+import json
+from contextlib import contextmanager
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import (
-    Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
-    FSInputFile, InputMediaPhoto, InputMediaVideo
+    Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 )
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-import logging
 
-# ==================== CONFIGURATION ====================
-TOKEN = "YOUR_BOT_TOKEN_HERE"  # @BotFather ကရတဲ့ Token
-OWNER_ID = 123456789  # သင့် Telegram User ID
-ADMIN_IDS = [123456789]  # Admin များရဲ့ ID
-
-# ==================== LOGGING ====================
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
+# Configure logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ==================== DATA FILES ====================
-DATA_DIR = "bot_data"
-os.makedirs(DATA_DIR, exist_ok=True)
+# ==================== CONFIGURATION ====================
+BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
+OWNER_ID = 123456789  # Replace with your Telegram ID
+GROUP_ID = -100123456789  # Replace with your Group ID
 
-WELCOMES_FILE = os.path.join(DATA_DIR, "welcomes.json")
-POSTS_FILE = os.path.join(DATA_DIR, "posts.json")
-BUTTONS_FILE = os.path.join(DATA_DIR, "buttons.json")
-SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
-
-# ==================== DATA CLASSES ====================
-class ButtonType:
-    URL = "url"
-    POPUP = "popup"
-    COMMAND = "command"
-    CALLBACK = "callback"
-
-class Button:
-    def __init__(self, text: str, button_type: str, data: str, order: int = 0):
-        self.text = text
-        self.type = button_type
-        self.data = data
-        self.order = order
-    
-    def to_dict(self):
-        return {
-            "text": self.text,
-            "type": self.type,
-            "data": self.data,
-            "order": self.order
-        }
-    
-    @classmethod
-    def from_dict(cls, data):
-        return cls(
-            text=data.get("text", ""),
-            button_type=data.get("type", ButtonType.CALLBACK),
-            data=data.get("data", ""),
-            order=data.get("order", 0)
-        )
-
-class Message:
-    def __init__(self, id: str, text: str = "", media: str = None, media_type: str = None):
-        self.id = id
-        self.text = text
-        self.media = media  # file_id or path
-        self.media_type = media_type  # photo/video
-        self.buttons = []  # List[Button]
-        self.created_at = datetime.now().isoformat()
-        self.updated_at = datetime.now().isoformat()
-    
-    def to_dict(self):
-        return {
-            "id": self.id,
-            "text": self.text,
-            "media": self.media,
-            "media_type": self.media_type,
-            "buttons": [b.to_dict() for b in self.buttons],
-            "created_at": self.created_at,
-            "updated_at": self.updated_at
-        }
-    
-    @classmethod
-    def from_dict(cls, data):
-        msg = cls(
-            id=data.get("id", ""),
-            text=data.get("text", ""),
-            media=data.get("media"),
-            media_type=data.get("media_type")
-        )
-        msg.buttons = [Button.from_dict(b) for b in data.get("buttons", [])]
-        msg.created_at = data.get("created_at", datetime.now().isoformat())
-        msg.updated_at = data.get("updated_at", datetime.now().isoformat())
-        return msg
-
-# ==================== DATABASE MANAGER ====================
+# ==================== DATABASE ====================
 class Database:
-    def __init__(self):
-        self.welcomes = self._load(WELCOMES_FILE, {"messages": [], "active": None})
-        self.posts = self._load(POSTS_FILE, {"messages": {}, "categories": {}})
-        self.buttons = self._load(BUTTONS_FILE, {"main_menu": [], "inline_buttons": {}})
-        self.settings = self._load(SETTINGS_FILE, {
-            "editing_mode": False,
-            "current_editor": None,
-            "current_message": None,
-            "temp_data": {}
-        })
+    def __init__(self, db_name="bot_data.db"):
+        self.db_name = db_name
+        self.init_db()
     
-    def _load(self, filename, default):
-        if os.path.exists(filename):
-            with open(filename, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        return default
+    @contextmanager
+    def get_connection(self):
+        conn = sqlite3.connect(self.db_name)
+        conn.row_factory = sqlite3.Row
+        try:
+            yield conn
+            conn.commit()
+        finally:
+            conn.close()
     
-    def _save(self, filename, data):
-        with open(filename, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=4)
-    
-    def save_all(self):
-        self._save(WELCOMES_FILE, self.welcomes)
-        self._save(POSTS_FILE, self.posts)
-        self._save(BUTTONS_FILE, self.buttons)
-        self._save(SETTINGS_FILE, self.settings)
-    
-    # Welcome Methods
-    def get_welcomes(self):
-        return self.welcomes["messages"]
-    
-    def add_welcome(self, text: str):
-        welcome = {
-            "id": str(len(self.welcomes["messages"]) + 1),
-            "text": text,
-            "created_at": datetime.now().isoformat()
-        }
-        self.welcomes["messages"].append(welcome)
-        if not self.welcomes["active"]:
-            self.welcomes["active"] = welcome["id"]
-        self.save_all()
-        return welcome
-    
-    def get_active_welcome(self):
-        if self.welcomes["active"]:
-            for w in self.welcomes["messages"]:
-                if w["id"] == self.welcomes["active"]:
-                    return w["text"]
-        return "မင်္ဂလာပါ {mention}!\nAnime Bot ကိုကြိုဆိုပါတယ်။"
-    
-    # Posts Methods
-    def get_posts(self):
-        return {k: Message.from_dict(v) for k, v in self.posts["messages"].items()}
-    
-    def get_post(self, post_id: str):
-        if post_id in self.posts["messages"]:
-            return Message.from_dict(self.posts["messages"][post_id])
-        return None
-    
-    def add_post(self, message: Message):
-        self.posts["messages"][message.id] = message.to_dict()
-        self.save_all()
-    
-    def update_post(self, post_id: str, **kwargs):
-        if post_id in self.posts["messages"]:
-            for key, value in kwargs.items():
-                if key == "buttons":
-                    self.posts["messages"][post_id][key] = [b.to_dict() for b in value]
-                else:
-                    self.posts["messages"][post_id][key] = value
-            self.posts["messages"][post_id]["updated_at"] = datetime.now().isoformat()
-            self.save_all()
-    
-    def delete_post(self, post_id: str):
-        if post_id in self.posts["messages"]:
-            del self.posts["messages"][post_id]
-            self.save_all()
-    
-    # Buttons Methods
-    def get_main_menu(self):
-        return [Button.from_dict(b) for b in self.buttons["main_menu"]]
-    
-    def add_main_menu_button(self, button: Button):
-        self.buttons["main_menu"].append(button.to_dict())
-        self.save_all()
-    
-    def get_inline_buttons(self, message_id: str):
-        if message_id in self.buttons["inline_buttons"]:
-            return [Button.from_dict(b) for b in self.buttons["inline_buttons"][message_id]]
-        return []
-
-db = Database()
+    def init_db(self):
+        with self.get_connection() as conn:
+            # Users table
+            conn.execute('''CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT,
+                full_name TEXT,
+                balance INTEGER DEFAULT 0,
+                total_invite INTEGER DEFAULT 0,
+                invite_limit INTEGER DEFAULT 100,
+                last_game_amount INTEGER DEFAULT 0,
+                last_game_time TEXT,
+                phone TEXT,
+                kpay_name TEXT,
+                join_date TEXT
+            )''')
+            
+            # Game settings table
+            conn.execute('''CREATE TABLE IF NOT EXISTS game_settings (
+                id INTEGER PRIMARY KEY CHECK (id=1),
+                total_amount INTEGER DEFAULT 0,
+                current_amount INTEGER DEFAULT 0,
+                game_active INTEGER DEFAULT 0
+            )''')
+            
+            # Game winners table
+            conn.execute('''CREATE TABLE IF NOT EXISTS game_winners (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                username TEXT,
+                full_name TEXT,
+                amount INTEGER,
+                win_time TEXT
+            )''')
+            
+            # Force channels table
+            conn.execute('''CREATE TABLE IF NOT EXISTS force_channels (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel_id TEXT UNIQUE,
+                channel_name TEXT,
+                channel_link TEXT,
+                added_date TEXT
+            )''')
+            
+            # Insert default game settings
+            conn.execute("INSERT OR IGNORE INTO game_settings (id) VALUES (1)")
 
 # ==================== FSM STATES ====================
-class BotStates(StatesGroup):
-    # Welcome Editor
-    adding_welcome = State()
-    editing_welcome = State()
-    
-    # Posts Editor
-    adding_post = State()
-    editing_post = State()
-    waiting_post_text = State()
-    waiting_post_media = State()
-    
-    # Buttons Editor
-    adding_button = State()
-    editing_button = State()
-    waiting_button_name = State()
-    waiting_button_type = State()
-    waiting_button_url = State()
-    waiting_button_popup = State()
-    waiting_button_command = State()
-    
-    # Settings
-    admin_mode = State()
-    editing_mode = State()
+class AdminStates(StatesGroup):
+    waiting_for_amount = State()
+    waiting_for_channel_link = State()
+    waiting_for_channel_name = State()
+    waiting_for_withdraw_name = State()
+    waiting_for_withdraw_phone = State()
 
-# ==================== INIT BOT ====================
-bot = Bot(token=TOKEN)
+class UserStates(StatesGroup):
+    waiting_for_withdraw_info = State()
+
+# ==================== INITIALIZE ====================
+db = Database()
+bot = Bot(token=BOT_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
-# ==================== KEYBOARD BUILDERS ====================
-def build_main_menu():
-    """ပင်မ Menu တည်ဆောက်မယ်"""
-    keyboard = []
-    buttons = db.get_main_menu()
-    
-    # 2 Columns နဲ့ပြမယ်
-    row = []
-    for i, btn in enumerate(buttons):
-        row.append(InlineKeyboardButton(
-            text=btn.text,
-            callback_data=f"menu_{btn.data}" if btn.type == ButtonType.CALLBACK else btn.data
-        ))
-        if len(row) == 2 or i == len(buttons) - 1:
-            keyboard.append(row)
-            row = []
-    
-    # Admin Button (Owner/Admin အတွက်)
-    keyboard.append([InlineKeyboardButton(text="⚙️ Admin", callback_data="admin_panel")])
-    
-    return InlineKeyboardMarkup(inline_keyboard=keyboard)
-
-def build_admin_panel():
-    """Admin Panel တည်ဆောက်မယ်"""
-    keyboard = [
-        [InlineKeyboardButton(text="📝 Posts Editor", callback_data="posts_editor")],
-        [InlineKeyboardButton(text="🔘 Buttons Editor", callback_data="buttons_editor")],
-        [InlineKeyboardButton(text="💬 Welcome Editor", callback_data="welcome_editor")],
-        [InlineKeyboardButton(text="⚖️ Balance", callback_data="balance")],
-        [InlineKeyboardButton(text="👤 Owner", callback_data="owner_settings")],
-        [InlineKeyboardButton(text="🔙 Main Menu", callback_data="back_main")]
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=keyboard)
-
-def build_posts_editor():
-    """Posts Editor တည်ဆောက်မယ်"""
-    keyboard = []
-    posts = db.get_posts()
-    
-    # Post တွေကို 2 Column နဲ့ပြမယ်
-    row = []
-    for i, (post_id, post) in enumerate(posts.items()):
-        row.append(InlineKeyboardButton(
-            text=post.text[:15] + "..." if len(post.text) > 15 else post.text,
-            callback_data=f"edit_post_{post_id}"
-        ))
-        if len(row) == 2 or i == len(posts) - 1:
-            keyboard.append(row)
-            row = []
-    
-    # Control Buttons
-    keyboard.extend([
-        [InlineKeyboardButton(text="➕ Add Message", callback_data="add_post")],
-        [InlineKeyboardButton(text="📄 Pagination (10)", callback_data="pagination")],
+# ==================== MAIN MENU KEYBOARD ====================
+def main_menu_keyboard():
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="🔘 Buttons Editor", callback_data="buttons_editor"),
-            InlineKeyboardButton(text="⏹️ Stop Editor", callback_data="stop_editor")
-        ]
-    ])
-    
-    return InlineKeyboardMarkup(inline_keyboard=keyboard)
-
-def build_message_settings(post_id: str):
-    """Message Settings တည်ဆောက်မယ်"""
-    post = db.get_post(post_id)
-    
-    keyboard = []
-    
-    # Inline Buttons တွေပြမယ်
-    if post and post.buttons:
-        row = []
-        for i, btn in enumerate(post.buttons):
-            btn_text = f"{btn.text} "
-            if btn.type == ButtonType.URL:
-                btn_text += "[u]"
-            elif btn.type == ButtonType.POPUP:
-                btn_text += "[p]"
-            elif btn.type == ButtonType.COMMAND:
-                btn_text += "[c]"
-            
-            row.append(InlineKeyboardButton(
-                text=btn_text,
-                callback_data=f"edit_button_{post_id}_{i}"
-            ))
-            if len(row) == 2 or i == len(post.buttons) - 1:
-                keyboard.append(row)
-                row = []
-    
-    # Button Management
-    keyboard.extend([
-        [
-            InlineKeyboardButton(text="✏️ Edit", callback_data=f"edit_msg_{post_id}"),
-            InlineKeyboardButton(text="🗑️ Del", callback_data=f"del_msg_{post_id}"),
-            InlineKeyboardButton(text="📋 More", callback_data=f"more_msg_{post_id}"),
-            InlineKeyboardButton(text="➕ Add", callback_data=f"add_button_{post_id}")
+            InlineKeyboardButton(text="🎲 ကံစမ်းမည်", callback_data="play_game"),
+            InlineKeyboardButton(text="💰 ထုတ်ယူရန်", callback_data="withdraw")
         ],
-        [InlineKeyboardButton(text="🖼️ Media Variable", callback_data=f"media_{post_id}")],
-        [InlineKeyboardButton(text="🔗 Links Preview", callback_data=f"links_{post_id}")],
-        [InlineKeyboardButton(text="⏹️ Exit Message Settings", callback_data="back_posts")]
+        [
+            InlineKeyboardButton(text="📊 My Info", callback_data="my_info"),
+            InlineKeyboardButton(text="👥 Invite", callback_data="invite")
+        ]
+    ])
+    return keyboard
+
+# ==================== CHANNEL CHECK ====================
+async def check_channels(user_id: int) -> tuple[bool, list]:
+    """Check if user joined all force channels"""
+    with db.get_connection() as conn:
+        channels = conn.execute("SELECT * FROM force_channels").fetchall()
+    
+    not_joined = []
+    for channel in channels:
+        try:
+            member = await bot.get_chat_member(chat_id=channel['channel_id'], user_id=user_id)
+            if member.status in ['left', 'kicked']:
+                not_joined.append(channel)
+        except:
+            not_joined.append(channel)
+    
+    return len(not_joined) == 0, not_joined
+
+def get_force_channels_keyboard(channels):
+    """Create keyboard for force channels"""
+    keyboard = []
+    for channel in channels:
+        if channel['channel_link']:
+            keyboard.append([InlineKeyboardButton(
+                text=f"📢 Join {channel['channel_name']}", 
+                url=channel['channel_link']
+            )])
+    
+    keyboard.append([InlineKeyboardButton(
+        text="🔄 Check Again", 
+        callback_data="check_join"
+    )])
+    
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+# ==================== START COMMAND ====================
+@dp.message(Command("start"))
+async def cmd_start(message: Message):
+    user_id = message.from_user.id
+    username = message.from_user.username or "No username"
+    full_name = message.from_user.full_name
+    
+    # Add user to database if not exists
+    with db.get_connection() as conn:
+        user = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
+        if not user:
+            conn.execute(
+                "INSERT INTO users (user_id, username, full_name, join_date) VALUES (?, ?, ?, ?)",
+                (user_id, username, full_name, datetime.now().isoformat())
+            )
+    
+    # Check force channels
+    joined, not_joined = await check_channels(user_id)
+    
+    if not joined:
+        keyboard = get_force_channels_keyboard(not_joined)
+        await message.answer(
+            "🔒 ကျေးဇူးပြု၍ အောက်ပါ Channel များကို Join ပေးပါ။",
+            reply_markup=keyboard
+        )
+        return
+    
+    # Show main menu
+    await message.answer(
+        f"ကြိုဆိုပါတယ် {full_name} ရေ...\n\nအောက်က ခလုတ်လေးတွေကနေ လုပ်ဆောင်နိုင်ပါတယ်။",
+        reply_markup=main_menu_keyboard()
+    )
+
+@dp.callback_query(F.data == "check_join")
+async def check_join_callback(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    joined, not_joined = await check_channels(user_id)
+    
+    if joined:
+        await callback.message.delete()
+        await cmd_start(callback.message)
+    else:
+        await callback.answer("ကျေးဇူးပြု၍ Channel များကို Join ပါ။", show_alert=True)
+
+# ==================== MY INFO ====================
+@dp.callback_query(F.data == "my_info")
+async def my_info(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    
+    with db.get_connection() as conn:
+        user = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
+        
+        if not user:
+            await callback.answer("User not found!")
+            return
+        
+        info_text = f"""
+📋 **My Information**
+━━━━━━━━━━━━━━━━
+👤 နာမည် - {user['full_name']}
+🆔 User ID - `{user['user_id']}`
+👥 Total Invite - {user['total_invite']} ယောက်
+💰 လက်ကျန်ငွေ - {user['balance']} ကျပ်
+🎲 နောက်ဆုံးကံစမ်းခဲ့သည့်ငွေ - {user['last_game_amount']} ကျပ်
+⏰ နောက်ဆုံးကံစမ်းခဲ့သည့်အချိန် - {user['last_game_time'] or 'မရှိသေးပါ'}
+━━━━━━━━━━━━━━━━
+        """
+        
+        await callback.message.edit_text(info_text, reply_markup=main_menu_keyboard())
+
+# ==================== INVITE SYSTEM ====================
+@dp.callback_query(F.data == "invite")
+async def invite_link(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    
+    with db.get_connection() as conn:
+        user = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
+        
+        if not user:
+            await callback.answer("User not found!")
+            return
+        
+        # Generate invite link
+        bot_info = await bot.get_me()
+        invite_link = f"https://t.me/{bot_info.username}?start=ref_{user_id}"
+        
+        invite_text = f"""
+👥 **Invite Friends**
+
+လူတစ်ယောက်ခေါ်ရင် 50 ကျပ်ရမည်။
+သင်၏လက်ရှိခေါ်ဆောင်ထားသူ: {user['total_invite']} ယောက်
+ခေါ်ဆောင်နိုင်သည့်အများဆုံး: {user['invite_limit']} ယောက်
+
+**သင်၏ Invite Link:**
+`{invite_link}`
+
+👉 အထက်ပါ Link ကိုနှိပ်၍ Copy ကူးနိုင်ပါသည်။
+        """
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📋 Copy Link", callback_data=f"copy_{invite_link}")],
+            [InlineKeyboardButton(text="🔙 Back", reply_to="back_to_main")]
+        ])
+        
+        await callback.message.edit_text(invite_text, reply_markup=keyboard)
+        
+        # Check if reached limit
+        if user['total_invite'] >= user['invite_limit']:
+            request_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="📢 Request More", callback_data="request_limit")],
+                [InlineKeyboardButton(text="🔙 Back", callback_data="back_to_main")]
+            ])
+            await callback.message.answer(
+                "⚠️ သင်၏ Invite Limit ပြည့်သွားပါပြီ။ Limit တိုးရန် Request လုပ်ပါ။",
+                reply_markup=request_keyboard
+            )
+
+@dp.callback_query(F.data == "request_limit")
+async def request_limit(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    
+    with db.get_connection() as conn:
+        user = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
+        
+        if not user:
+            await callback.answer("User not found!")
+            return
+        
+        # Send to owner
+        request_text = f"""
+📢 **Limit တိုးရန် Request**
+━━━━━━━━━━━━━━━━
+👤 နာမည် - {user['full_name']}
+🆔 User ID - `{user['user_id']}`
+🔗 Username - @{user['username']}
+👥 Total Invite - {user['total_invite']}
+📊 Current Limit - {user['invite_limit']}
+━━━━━━━━━━━━━━━━
+        """
+        
+        confirm_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Confirm", callback_data=f"confirm_limit_{user['user_id']}"),
+                InlineKeyboardButton(text="❌ Cancel", callback_data=f"cancel_limit_{user['user_id']}")
+            ]
+        ])
+        
+        await bot.send_message(OWNER_ID, request_text, reply_markup=confirm_keyboard)
+        await callback.answer("Request sent to owner!", show_alert=True)
+
+# ==================== GAME SYSTEM ====================
+@dp.callback_query(F.data == "play_game")
+async def play_game(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    
+    # Check force channels first
+    joined, not_joined = await check_channels(user_id)
+    if not joined:
+        keyboard = get_force_channels_keyboard(not_joined)
+        await callback.message.answer(
+            "🔒 ကျေးဇူးပြု၍ အောက်ပါ Channel များကို Join ပေးပါ။",
+            reply_markup=keyboard
+        )
+        return
+    
+    with db.get_connection() as conn:
+        game = conn.execute("SELECT * FROM game_settings WHERE id = 1").fetchone()
+        
+        if not game['game_active']:
+            await callback.answer("ဂိမ်းမစတင်သေးပါ။ Owner စတင်ရန်စောင့်ဆိုင်းပါ။", show_alert=True)
+            return
+        
+        if game['current_amount'] <= 0:
+            await callback.answer("ကံစမ်းငွေကုန်သွားပါပြီ။ နောက်ရက်မှကံစမ်းပါ။", show_alert=True)
+            return
+        
+        # Random amount between 100 and 500
+        game_amount = random.randint(100, 500)
+        
+        # Make sure not to exceed current amount
+        if game_amount > game['current_amount']:
+            game_amount = game['current_amount']
+        
+        # Update game and user
+        new_amount = game['current_amount'] - game_amount
+        conn.execute(
+            "UPDATE game_settings SET current_amount = ? WHERE id = 1",
+            (new_amount,)
+        )
+        
+        conn.execute(
+            """UPDATE users SET 
+               balance = balance + ?,
+               last_game_amount = ?,
+               last_game_time = ?
+               WHERE user_id = ?""",
+            (game_amount, game_amount, datetime.now().isoformat(), user_id)
+        )
+        
+        # Save winner
+        user = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
+        conn.execute(
+            """INSERT INTO game_winners 
+               (user_id, username, full_name, amount, win_time) 
+               VALUES (?, ?, ?, ?, ?)""",
+            (user_id, user['username'], user['full_name'], game_amount, datetime.now().isoformat())
+        )
+        
+        await callback.answer(f"ဂုဏ်ယူပါတယ်။ သင်ကံစမ်းရရှိငွေ {game_amount} ကျပ်", show_alert=True)
+        
+        # Check if game amount finished
+        if new_amount <= 0:
+            # Update game inactive
+            conn.execute("UPDATE game_settings SET game_active = 0 WHERE id = 1")
+            
+            # Get all winners
+            winners = conn.execute(
+                "SELECT * FROM game_winners ORDER BY win_time DESC"
+            ).fetchall()
+            
+            # Send winners list to owner
+            winners_text = "📊 **ဂိမ်းပြီးဆုံးချိန် ရလဒ်များ**\n\n"
+            total_given = 0
+            
+            for w in winners:
+                winners_text += f"👤 {w['full_name']} (@{w['username']})\n"
+                winners_text += f"🆔 `{w['user_id']}`\n"
+                winners_text += f"💰 ရရှိငွေ - {w['amount']} ကျပ်\n"
+                winners_text += f"⏰ {w['win_time']}\n\n"
+                total_given += w['amount']
+            
+            winners_text += f"━━━━━━━━━━━━━━━━\n"
+            winners_text += f"စုစုပေါင်းပေးအပ်ငွေ: {total_given} ကျပ်"
+            
+            await bot.send_message(OWNER_ID, winners_text)
+            await bot.send_message(OWNER_ID, "⚠️ ကံစမ်းငွေကုန်သွားပါပြီ။ ဂိမ်းရပ်နားထားပါသည်။")
+
+# ==================== WITHDRAW SYSTEM ====================
+@dp.callback_query(F.data == "withdraw")
+async def withdraw_start(callback: CallbackQuery, state: FSMContext):
+    user_id = callback.from_user.id
+    
+    with db.get_connection() as conn:
+        user = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
+        
+        if not user or user['balance'] <= 0:
+            await callback.answer("သင့်တွင်ငွေမရှိပါ။", show_alert=True)
+            return
+    
+    await callback.message.edit_text(
+        "💰 **ငွေထုတ်ယူရန်**\n\n"
+        "ကျေးဇူးပြု၍ သင့် KPay/Wave နာမည်နှင့် ဖုန်းနံပါတ်ကို ရိုက်ထည့်ပါ။\n"
+        "ပုံစံ - နာမည်၊ဖုန်းနံပါတ်\n"
+        "ဥပမာ - မောင်မောင်၊၀၉၄၂၈၅၆၃၆၃"
+    )
+    await state.set_state(UserStates.waiting_for_withdraw_info)
+
+@dp.message(UserStates.waiting_for_withdraw_info)
+async def process_withdraw_info(message: Message, state: FSMContext):
+    try:
+        name, phone = message.text.split(',')
+        name = name.strip()
+        phone = phone.strip()
+        
+        user_id = message.from_user.id
+        username = message.from_user.username or "No username"
+        full_name = message.from_user.full_name
+        
+        with db.get_connection() as conn:
+            user = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
+            
+            # Update user phone and name
+            conn.execute(
+                "UPDATE users SET phone = ?, kpay_name = ? WHERE user_id = ?",
+                (phone, name, user_id)
+            )
+            
+            # Send to owner
+            withdraw_text = f"""
+📤 **ငွေထုတ်ယူရန် တောင်းဆိုချက်**
+━━━━━━━━━━━━━━━━
+👤 အမည် - {full_name}
+🆔 User ID - `{user_id}`
+🔗 Username - @{username}
+💰 ထုတ်ယူမည့်ငွေ - {user['balance']} ကျပ်
+💳 ငွေလက်ခံမည့် အကောင့် - KPay/Wave
+📞 ဖုန်းနံပါတ် - {phone}
+💵 လက်ကျန်ငွေ - {user['balance']} ကျပ်
+━━━━━━━━━━━━━━━━
+            """
+            
+            confirm_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="✅ Confirm", callback_data=f"confirm_withdraw_{user_id}"),
+                    InlineKeyboardButton(text="❌ Cancel", callback_data=f"cancel_withdraw_{user_id}")
+                ]
+            ])
+            
+            await bot.send_message(OWNER_ID, withdraw_text, reply_markup=confirm_keyboard)
+            
+        await message.answer("သင်၏တောင်းဆိုချက်ကို Owner ထံပို့လိုက်ပါပြီ။ ခွင့်ပြုချက်စောင့်ဆိုင်းပါ။")
+        await state.clear()
+        
+        # Show main menu again
+        await message.answer("Main Menu", reply_markup=main_menu_keyboard())
+            
+    except Exception as e:
+        await message.answer("ပုံစံမှားနေပါသည်။ နမူနာလိုက်ပါ။ နာမည်၊ဖုန်းနံပါတ်")
+
+# ==================== ADMIN COMMANDS ====================
+@dp.message(Command("admin"))
+async def admin_panel(message: Message):
+    if message.from_user.id != OWNER_ID:
+        return
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="💰 ငွေထည့်ရန်", callback_data="admin_add_amount"),
+            InlineKeyboardButton(text="📊 Game Status", callback_data="admin_game_status")
+        ],
+        [
+            InlineKeyboardButton(text="🔐 Force Channel", callback_data="admin_force"),
+            InlineKeyboardButton(text="📈 Statistics", callback_data="admin_stats")
+        ],
+        [
+            InlineKeyboardButton(text="🎮 ဂိမ်းစတင်ရန်", callback_data="admin_start_game"),
+            InlineKeyboardButton(text="⏹ ဂိမ်းရပ်ရန်", callback_data="admin_stop_game")
+        ]
     ])
     
-    return InlineKeyboardMarkup(inline_keyboard=keyboard)
-
-def build_button_type_selector(post_id: str):
-    """Button Type ရွေးချယ်ရန်"""
-    keyboard = [
-        [InlineKeyboardButton(text="🔗 URL or Share", callback_data=f"btn_url_{post_id}")],
-        [InlineKeyboardButton(text="🪟 Pop-up Window", callback_data=f"btn_popup_{post_id}")],
-        [InlineKeyboardButton(text="⚡ Command", callback_data=f"btn_cmd_{post_id}")],
-        [InlineKeyboardButton(text="❌ Cancel", callback_data=f"cancel_btn_{post_id}")]
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=keyboard)
-
-def build_welcome_editor():
-    """Welcome Editor တည်ဆောက်မယ်"""
-    keyboard = [
-        [InlineKeyboardButton(text="➕ Add Welcome", callback_data="add_welcome")],
-        [InlineKeyboardButton(text="👁️ View Welcomes", callback_data="view_welcomes")],
-        [InlineKeyboardButton(text="✏️ Edit Welcome", callback_data="edit_welcome")],
-        [InlineKeyboardButton(text="🗑️ Delete Welcome", callback_data="delete_welcome")],
-        [InlineKeyboardButton(text="✅ Set Active", callback_data="set_active_welcome")],
-        [InlineKeyboardButton(text="🔙 Back", callback_data="back_admin")]
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=keyboard)
-
-# ==================== HANDLERS ====================
-
-@dp.message(Command("start"))
-async def cmd_start(message: Message, state: FSMContext):
-    """/start command - User စတင်အသုံးပြုချိန်"""
-    user_mention = message.from_user.mention_html()
-    welcome_text = db.get_active_welcome().format(mention=user_mention)
-    
     await message.answer(
-        text=welcome_text,
-        reply_markup=build_main_menu(),
-        parse_mode="HTML"
+        "👑 **Admin Panel**\n\nအောက်ပါလုပ်ဆောင်ချက်များကို ရွေးချယ်ပါ။",
+        reply_markup=keyboard
     )
 
-@dp.callback_query(F.data == "admin_panel")
-async def admin_panel(callback: CallbackQuery, state: FSMContext):
-    """Admin Panel ကိုပြမယ်"""
-    if callback.from_user.id not in ADMIN_IDS and callback.from_user.id != OWNER_ID:
-        await callback.answer("သင်သည် Admin မဟုတ်ပါ။", show_alert=True)
+@dp.callback_query(F.data == "admin_add_amount")
+async def admin_add_amount(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id != OWNER_ID:
         return
     
     await callback.message.edit_text(
-        text="👑 **Admin Panel**\n\nအောက်ပါ Menu များမှ ရွေးချယ်ပါ။",
-        reply_markup=build_admin_panel(),
-        parse_mode="Markdown"
+        "💰 ကံစမ်းငွေထည့်ရန်\n\n"
+        "ငွေပမာဏ ရိုက်ထည့်ပါ။"
     )
-    await callback.answer()
+    await state.set_state(AdminStates.waiting_for_amount)
 
-# ==================== POSTS EDITOR ====================
-
-@dp.callback_query(F.data == "posts_editor")
-async def posts_editor(callback: CallbackQuery, state: FSMContext):
-    """Posts Editor ကိုပြမယ်"""
-    await callback.message.edit_text(
-        text="📝 **Posts Editor**\nYou are in Messages Editing mode.\n\nအောက်ပါ Message များကို ရွေးချယ်ပါ။",
-        reply_markup=build_posts_editor(),
-        parse_mode="Markdown"
-    )
-    await callback.answer()
-
-@dp.callback_query(F.data == "add_post")
-async def add_post_start(callback: CallbackQuery, state: FSMContext):
-    """Message အသစ်ထည့်ရန်"""
-    await callback.message.edit_text(
-        text="➕ **Adding new Message**\n\nEnter New Message.\n\nYou can also <Forward> text from another chat or channel.",
-        parse_mode="HTML"
-    )
-    await state.set_state(BotStates.waiting_post_text)
-    await callback.answer()
-
-@dp.message(BotStates.waiting_post_text)
-async def add_post_text(message: Message, state: FSMContext):
-    """Message စာသားရရှိချိန်"""
-    post_id = f"post_{datetime.now().strftime('%Y%m%d%H%M%S')}"
-    new_post = Message(id=post_id, text=message.text)
-    db.add_post(new_post)
-    
-    await state.clear()
-    await message.answer(
-        text=f"✅ Message ထည့်ပြီးပါပြီ။\n\n**{message.text[:50]}**",
-        reply_markup=build_posts_editor(),
-        parse_mode="Markdown"
-    )
-
-@dp.callback_query(F.data.startswith("edit_post_"))
-async def edit_post(callback: CallbackQuery, state: FSMContext):
-    """Post တစ်ခုကို ပြင်ဆင်မယ်"""
-    post_id = callback.data.replace("edit_post_", "")
-    
-    # Post data ကို settings မှာ ယာယီသိမ်းမယ်
-    db.settings["current_message"] = post_id
-    db.save_all()
-    
-    post = db.get_post(post_id)
-    if not post:
-        await callback.answer("Message မတွေ့ပါ။", show_alert=True)
+@dp.message(AdminStates.waiting_for_amount)
+async def process_add_amount(message: Message, state: FSMContext):
+    if message.from_user.id != OWNER_ID:
         return
     
-    # Post အချက်အလက်ပြမယ်
-    display_text = f"**{post.text[:50]}**\n\n"
-    if post.buttons:
-        display_text += "Button များ:\n"
-        for btn in post.buttons:
-            btn_type = "🔗" if btn.type == ButtonType.URL else "🪟" if btn.type == ButtonType.POPUP else "⚡"
-            display_text += f"{btn_type} {btn.text}\n"
-    
-    await callback.message.edit_text(
-        text=display_text,
-        reply_markup=build_message_settings(post_id),
-        parse_mode="Markdown"
-    )
-    await callback.answer()
+    try:
+        amount = int(message.text)
+        
+        with db.get_connection() as conn:
+            game = conn.execute("SELECT * FROM game_settings WHERE id = 1").fetchone()
+            new_total = game['total_amount'] + amount
+            new_current = game['current_amount'] + amount
+            
+            conn.execute(
+                "UPDATE game_settings SET total_amount = ?, current_amount = ? WHERE id = 1",
+                (new_total, new_current)
+            )
+        
+        await message.answer(f"✅ ငွေထည့်ပြီးပါပြီ။ လက်ရှိငွေ: {new_current} ကျပ်")
+        await state.clear()
+        
+    except ValueError:
+        await message.answer("နံပါတ်သာရိုက်ပါ။")
 
-@dp.callback_query(F.data.startswith("add_button_"))
-async def add_button_start(callback: CallbackQuery, state: FSMContext):
-    """Button အသစ်ထည့်ရန်"""
-    post_id = callback.data.replace("add_button_", "")
-    
-    await state.update_data(current_post=post_id)
-    await callback.message.edit_text(
-        text="Choose the MODE of Inline button:",
-        reply_markup=build_button_type_selector(post_id)
-    )
-    await callback.answer()
-
-@dp.callback_query(F.data.startswith("btn_url_"))
-async def add_url_button(callback: CallbackQuery, state: FSMContext):
-    """URL Button ထည့်မယ်"""
-    post_id = callback.data.replace("btn_url_", "")
-    await state.update_data(button_type=ButtonType.URL, post_id=post_id)
-    
-    await callback.message.edit_text(
-        text="**Button Mode: URL or Share**\n\n"
-             "Enter data for the URL/SHARE-button.\n\n"
-             "For example to create <Share> button with the link:\n"
-             "Share\n"
-             "https://t.me/share/url?url=t.me/YourBot\n\n"
-             "Data shall go in TWO LINES:\n"
-             "BUTTON TITLE\n"
-             "URL/Share address",
-        parse_mode="Markdown"
-    )
-    await state.set_state(BotStates.waiting_button_url)
-    await callback.answer()
-
-@dp.message(BotStates.waiting_button_url)
-async def process_url_button(message: Message, state: FSMContext):
-    """URL Button Data ရရှိချိန်"""
-    lines = message.text.strip().split('\n')
-    if len(lines) < 2:
-        await message.answer("ကျေးဇူးပြု၍ ပုံစံမှန်မှန်ထည့်ပါ။\nLine1: Button Name\nLine2: URL")
+@dp.callback_query(F.data == "admin_start_game")
+async def admin_start_game(callback: CallbackQuery):
+    if callback.from_user.id != OWNER_ID:
         return
     
-    button_name = lines[0].strip()
-    url = lines[1].strip()
-    
-    data = await state.get_data()
-    post_id = data.get('post_id')
-    
-    post = db.get_post(post_id)
-    if post:
-        new_button = Button(text=button_name, button_type=ButtonType.URL, data=url)
-        post.buttons.append(new_button)
-        db.update_post(post_id, buttons=post.buttons)
+    with db.get_connection() as conn:
+        game = conn.execute("SELECT * FROM game_settings WHERE id = 1").fetchone()
         
-        # Success Message
-        await message.answer(
-            text=f"✅ **Inline button successfully added!**\n\n"
-                 f"[+] {button_name} [u]\n\n"
-                 f"You can check its URL if you want to, and/or continue adding buttons.",
-            parse_mode="Markdown"
-        )
+        if game['current_amount'] <= 0:
+            await callback.answer("ငွေအရင်ထည့်ပါ။", show_alert=True)
+            return
         
-        # Message Settings ကိုပြန်ပြမယ်
-        await message.answer(
-            text="You are in the Message Settings mode.",
-            reply_markup=build_message_settings(post_id)
-        )
+        conn.execute("UPDATE game_settings SET game_active = 1 WHERE id = 1")
     
-    await state.clear()
+    await callback.answer("ဂိမ်းစတင်ပါပြီ။")
+    await admin_panel(callback.message)
 
-@dp.callback_query(F.data.startswith("btn_popup_"))
-async def add_popup_button(callback: CallbackQuery, state: FSMContext):
-    """Pop-up Window Button ထည့်မယ်"""
-    post_id = callback.data.replace("btn_popup_", "")
-    await state.update_data(button_type=ButtonType.POPUP, post_id=post_id)
+@dp.callback_query(F.data == "admin_stop_game")
+async def admin_stop_game(callback: CallbackQuery):
+    if callback.from_user.id != OWNER_ID:
+        return
+    
+    with db.get_connection() as conn:
+        conn.execute("UPDATE game_settings SET game_active = 0 WHERE id = 1")
+    
+    await callback.answer("ဂိမ်းရပ်နားထားပါသည်။")
+    await admin_panel(callback.message)
+
+@dp.callback_query(F.data == "admin_game_status")
+async def admin_game_status(callback: CallbackQuery):
+    if callback.from_user.id != OWNER_ID:
+        return
+    
+    with db.get_connection() as conn:
+        game = conn.execute("SELECT * FROM game_settings WHERE id = 1").fetchone()
+    
+    status_text = f"""
+📊 **Game Status**
+━━━━━━━━━━━━━━━━
+💰 စုစုပေါင်းငွေ - {game['total_amount']} ကျပ်
+💵 လက်ကျန်ငွေ - {game['current_amount']} ကျပ်
+🎮 ဂိမ်းအခြေအနေ - {'ဖွင့်ထားသည်' if game['game_active'] else 'ပိတ်ထားသည်'}
+━━━━━━━━━━━━━━━━
+    """
     
     await callback.message.edit_text(
-        text="**Button Mode: Pop-up Window**\n\n"
-             "Enter data for the button with POP-UP WINDOW.\n\n"
-             "Telegram limitation for this type of messages is 200 symbols.\n\n"
-             "Data may go in SEVERAL LINES:\n"
-             "BUTTON TITLE\n"
-             "First line of the message\n"
-             "Second line of the message",
-        parse_mode="Markdown"
+        status_text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 Back", callback_data="admin_back")]
+        ])
     )
-    await state.set_state(BotStates.waiting_button_popup)
-    await callback.answer()
 
-@dp.message(BotStates.waiting_button_popup)
-async def process_popup_button(message: Message, state: FSMContext):
-    """Pop-up Button Data ရရှိချိန်"""
-    lines = message.text.strip().split('\n')
-    if len(lines) < 2:
-        await message.answer("ကျေးဇူးပြု၍ ပုံစံမှန်မှန်ထည့်ပါ။\nLine1: Button Name\nLine2+: Pop-up Message")
+@dp.callback_query(F.data == "admin_stats")
+async def admin_stats(callback: CallbackQuery):
+    if callback.from_user.id != OWNER_ID:
         return
     
-    button_name = lines[0].strip()
-    popup_text = '\n'.join(lines[1:]).strip()
+    with db.get_connection() as conn:
+        total_users = conn.execute("SELECT COUNT(*) as count FROM users").fetchone()['count']
+        total_balance = conn.execute("SELECT SUM(balance) as total FROM users").fetchone()['total'] or 0
+        game = conn.execute("SELECT * FROM game_settings WHERE id = 1").fetchone()
+        channels = conn.execute("SELECT COUNT(*) as count FROM force_channels").fetchone()['count']
+        total_winners = conn.execute("SELECT COUNT(*) as count FROM game_winners").fetchone()['count']
+        total_given = conn.execute("SELECT SUM(amount) as total FROM game_winners").fetchone()['total'] or 0
     
-    if len(popup_text) > 200:
-        await message.answer(f"Pop-up Message သည် စာလုံးရေ ၂၀၀ ထက်မပိုရပါ။ (လက်ရှိ: {len(popup_text)} လုံး)")
-        return
-    
-    data = await state.get_data()
-    post_id = data.get('post_id')
-    
-    post = db.get_post(post_id)
-    if post:
-        new_button = Button(text=button_name, button_type=ButtonType.POPUP, data=popup_text)
-        post.buttons.append(new_button)
-        db.update_post(post_id, buttons=post.buttons)
-        
-        await message.answer(
-            text=f"✅ **Inline button successfully added!**\n\n"
-                 f"[+] {button_name} [p]",
-            parse_mode="Markdown"
-        )
-        
-        await message.answer(
-            text="You are in the Message Settings mode.",
-            reply_markup=build_message_settings(post_id)
-        )
-    
-    await state.clear()
-
-@dp.callback_query(F.data.startswith("btn_cmd_"))
-async def add_command_button(callback: CallbackQuery, state: FSMContext):
-    """Command Button ထည့်မယ်"""
-    post_id = callback.data.replace("btn_cmd_", "")
-    await state.update_data(button_type=ButtonType.COMMAND, post_id=post_id)
+    stats_text = f"""
+📈 **Bot Statistics**
+━━━━━━━━━━━━━━━━
+👥 စုစုပေါင်းအသုံးပြုသူ - {total_users}
+💰 စုစုပေါင်းလက်ကျန်ငွေ - {total_balance} ကျပ်
+🎲 ဂိမ်းလက်ကျန်ငွေ - {game['current_amount']} ကျပ်
+🔐 Force Channels - {channels} ခု
+🏆 စုစုပေါင်းဆုရှင် - {total_winners} ဦး
+💸 စုစုပေါင်းပေးအပ်ငွေ - {total_given} ကျပ်
+━━━━━━━━━━━━━━━━
+    """
     
     await callback.message.edit_text(
-        text="**Button Mode: Command**\n\n"
-             "Enter data for COMMAND button.\n\n"
-             "Data shall go in TWO LINES:\n"
-             "BUTTON TITLE\n"
-             "Command (e.g., /back, /start, /help)",
-        parse_mode="Markdown"
+        stats_text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 Back", callback_data="admin_back")]
+        ])
     )
-    await state.set_state(BotStates.waiting_button_command)
-    await callback.answer()
 
-@dp.message(BotStates.waiting_button_command)
-async def process_command_button(message: Message, state: FSMContext):
-    """Command Button Data ရရှိချိန်"""
-    lines = message.text.strip().split('\n')
-    if len(lines) < 2:
-        await message.answer("ကျေးဇူးပြု၍ ပုံစံမှန်မှန်ထည့်ပါ။\nLine1: Button Name\nLine2: Command")
+# ==================== FORCE CHANNEL SYSTEM ====================
+@dp.callback_query(F.data == "admin_force")
+async def admin_force(callback: CallbackQuery):
+    if callback.from_user.id != OWNER_ID:
         return
     
-    button_name = lines[0].strip()
-    command = lines[1].strip()
-    
-    data = await state.get_data()
-    post_id = data.get('post_id')
-    
-    post = db.get_post(post_id)
-    if post:
-        new_button = Button(text=button_name, button_type=ButtonType.COMMAND, data=command)
-        post.buttons.append(new_button)
-        db.update_post(post_id, buttons=post.buttons)
-        
-        await message.answer(
-            text=f"✅ **Inline button successfully added!**\n\n"
-                 f"[+] {button_name} [c]",
-            parse_mode="Markdown"
-        )
-        
-        await message.answer(
-            text="You are in the Message Settings mode.",
-            reply_markup=build_message_settings(post_id)
-        )
-    
-    await state.clear()
-
-# ==================== BUTTONS EDITOR ====================
-
-@dp.callback_query(F.data == "buttons_editor")
-async def buttons_editor(callback: CallbackQuery, state: FSMContext):
-    """Buttons Editor ကိုပြမယ်"""
-    keyboard = []
-    buttons = db.get_main_menu()
-    
-    row = []
-    for i, btn in enumerate(buttons):
-        row.append(InlineKeyboardButton(
-            text=btn.text,
-            callback_data=f"edit_main_btn_{i}"
-        ))
-        if len(row) == 2 or i == len(buttons) - 1:
-            keyboard.append(row)
-            row = []
-    
-    keyboard.extend([
-        [InlineKeyboardButton(text="➕ Add Button", callback_data="add_main_button")],
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="⏹️ Stop Editor", callback_data="back_main"),
-            InlineKeyboardButton(text="📝 Posts Editor", callback_data="posts_editor")
+            InlineKeyboardButton(text="➕ Add Channel", callback_data="force_add"),
+            InlineKeyboardButton(text="📋 List Channels", callback_data="force_list")
+        ],
+        [
+            InlineKeyboardButton(text="🔙 Back", callback_data="admin_back")
         ]
     ])
     
     await callback.message.edit_text(
-        text="🔘 **Buttons Editor**\nYou are in Button Editing mode.\n\nအောက်ပါ Button များကို စီမံနိုင်ပါသည်။",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
-        parse_mode="Markdown"
+        "🔐 **Force Channel Settings**\n\n"
+        "Channel တွေထည့်ရန် Add Channel ကိုနှိပ်ပါ။\n"
+        "Channel တွေကြည့်ရန် List Channels ကိုနှိပ်ပါ။",
+        reply_markup=keyboard
     )
-    await callback.answer()
 
-@dp.callback_query(F.data == "add_main_button")
-async def add_main_button(callback: CallbackQuery, state: FSMContext):
-    """Main Menu Button အသစ်ထည့်မယ်"""
+@dp.callback_query(F.data == "force_add")
+async def force_add_start(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
-        text="➕ **Adding new button**\n\nEnter a Name for the new button.\n\nPress < > Cancel> if you change your mind.",
-        parse_mode="Markdown"
+        "➕ **Add Channel**\n\n"
+        "Channel Link ကိုရိုက်ထည့်ပါ။\n"
+        "ဥပမာ: https://t.me/yourchannel"
     )
-    await state.set_state(BotStates.waiting_button_name)
-    await callback.answer()
+    await state.set_state(AdminStates.waiting_for_channel_link)
 
-@dp.message(BotStates.waiting_button_name)
-async def process_main_button_name(message: Message, state: FSMContext):
-    """Main Menu Button Name ရရှိချိန်"""
-    button_name = message.text.strip()
-    
-    new_button = Button(text=button_name, button_type=ButtonType.CALLBACK, data=f"category_{button_name.lower()}")
-    db.add_main_menu_button(new_button)
+@dp.message(AdminStates.waiting_for_channel_link)
+async def force_add_channel_link(message: Message, state: FSMContext):
+    channel_link = message.text.strip()
+    await state.update_data(channel_link=channel_link)
     
     await message.answer(
-        text=f"✅ Button '{button_name}' ကိုထည့်ပြီးပါပြီ။",
-        reply_markup=build_main_menu()
+        "Channel Name ကိုရိုက်ထည့်ပါ။"
     )
-    await state.clear()
+    await state.set_state(AdminStates.waiting_for_channel_name)
 
-# ==================== WELCOME EDITOR ====================
-
-@dp.callback_query(F.data == "welcome_editor")
-async def welcome_editor(callback: CallbackQuery, state: FSMContext):
-    """Welcome Editor ကိုပြမယ်"""
-    await callback.message.edit_text(
-        text="💬 **Welcome Editor**\n\nWelcome Message များကို စီမံနိုင်ပါသည်။",
-        reply_markup=build_welcome_editor(),
-        parse_mode="Markdown"
-    )
-    await callback.answer()
-
-@dp.callback_query(F.data == "add_welcome")
-async def add_welcome_start(callback: CallbackQuery, state: FSMContext):
-    """Welcome Message အသစ်ထည့်ရန်"""
-    await callback.message.edit_text(
-        text="➕ **Add New Welcome**\n\nEnter Welcome Message text.\n\nUse {mention} for user mention.",
-        parse_mode="Markdown"
-    )
-    await state.set_state(BotStates.adding_welcome)
-    await callback.answer()
-
-@dp.message(BotStates.adding_welcome)
-async def add_welcome_text(message: Message, state: FSMContext):
-    """Welcome Message ရရှိချိန်"""
-    welcome = db.add_welcome(message.text)
+@dp.message(AdminStates.waiting_for_channel_name)
+async def force_add_channel_name(message: Message, state: FSMContext):
+    channel_name = message.text.strip()
+    data = await state.get_data()
     
-    await message.answer(
-        text=f"✅ Welcome Message ထည့်ပြီးပါပြီ။ (ID: {welcome['id']})",
-        reply_markup=build_welcome_editor()
-    )
-    await state.clear()
-
-# ==================== VIEW POSTS ====================
-
-@dp.callback_query(F.data.startswith("menu_"))
-async def handle_menu_click(callback: CallbackQuery, state: FSMContext):
-    """Main Menu ကို နှိပ်တဲ့အခါ"""
-    category = callback.data.replace("menu_", "")
+    # Extract channel ID from link
+    channel_username = data['channel_link'].split('/')[-1]
     
-    # Category အောက်က Post တွေကိုပြမယ်
-    posts = db.get_posts()
-    category_posts = [p for p in posts.values() if category.lower() in p.text.lower()]
+    try:
+        chat = await bot.get_chat(f"@{channel_username}")
+        channel_id = str(chat.id)
+        
+        with db.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO force_channels (channel_id, channel_name, channel_link, added_date) VALUES (?, ?, ?, ?)",
+                (channel_id, channel_name, data['channel_link'], datetime.now().isoformat())
+            )
+        
+        await message.answer(f"✅ Channel {channel_name} added successfully!\n\nBot ကို Channel မှာ Admin လုပ်ထားရန်မမေ့ပါနှင့်။")
+        await state.clear()
+        
+    except Exception as e:
+        await message.answer(f"❌ Error: {str(e)}\n\nChannel ID ရှာမတွေ့ပါ။ Bot ကို Channel မှာ Admin လုပ်ထားကြောင်းစစ်ပါ။")
+
+@dp.callback_query(F.data == "force_list")
+async def force_list(callback: CallbackQuery):
+    with db.get_connection() as conn:
+        channels = conn.execute("SELECT * FROM force_channels").fetchall()
     
-    if not category_posts:
-        await callback.answer("ဤအမျိုးအစားတွင် ဇာတ်ကားမရှိသေးပါ။")
+    if not channels:
+        await callback.message.edit_text(
+            "No channels added yet.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 Back", callback_data="admin_force")]
+            ])
+        )
         return
     
-    # ပထမဆုံး Post ကိုပြမယ်
-    post = category_posts[0]
-    
-    # Inline Keyboard တည်ဆောက်မယ်
+    text = "📋 **Force Channels**\n\n"
     keyboard = []
-    row = []
-    for i, btn in enumerate(post.buttons[:4]):  # 4 buttons max
-        if btn.type == ButtonType.URL:
-            row.append(InlineKeyboardButton(text=btn.text, url=btn.data))
-        elif btn.type == ButtonType.POPUP:
-            row.append(InlineKeyboardButton(text=btn.text, callback_data=f"popup_{post.id}_{i}"))
-        elif btn.type == ButtonType.COMMAND:
-            row.append(InlineKeyboardButton(text=btn.text, callback_data=btn.data))
-        
-        if len(row) == 2 or i == min(len(post.buttons), 4) - 1:
-            keyboard.append(row)
-            row = []
     
-    # Back Button
-    keyboard.append([InlineKeyboardButton(text="🔙 Back", callback_data="back_main")])
+    for i, channel in enumerate(channels, 1):
+        text += f"{i}. {channel['channel_name']}\n"
+        text += f"   Link: {channel['channel_link']}\n\n"
+        keyboard.append([InlineKeyboardButton(
+            text=f"❌ Delete {channel['channel_name']}",
+            callback_data=f"del_chan_{channel['id']}"
+        )])
     
-    if post.media and post.media_type == "photo":
-        await callback.message.answer_photo(
-            photo=post.media,
-            caption=post.text,
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
-        )
-    elif post.media and post.media_type == "video":
-        await callback.message.answer_video(
-            video=post.media,
-            caption=post.text,
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
-        )
-    else:
-        await callback.message.answer(
-            text=post.text,
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
-        )
-    
-    await callback.answer()
-
-@dp.callback_query(F.data.startswith("popup_"))
-async def handle_popup(callback: CallbackQuery, state: FSMContext):
-    """Pop-up Window Button နှိပ်တဲ့အခါ"""
-    parts = callback.data.split('_')
-    post_id = parts[1]
-    btn_index = int(parts[2])
-    
-    post = db.get_post(post_id)
-    if post and btn_index < len(post.buttons):
-        btn = post.buttons[btn_index]
-        if btn.type == ButtonType.POPUP:
-            await callback.answer(btn.data, show_alert=True)
-    
-    await callback.answer()
-
-@dp.callback_query(F.data == "back_main")
-async def back_to_main(callback: CallbackQuery, state: FSMContext):
-    """Main Menu ကိုပြန်သွားမယ်"""
-    user_mention = callback.from_user.mention_html()
-    welcome_text = db.get_active_welcome().format(mention=user_mention)
+    keyboard.append([InlineKeyboardButton(text="🔙 Back", callback_data="admin_force")])
     
     await callback.message.edit_text(
-        text=welcome_text,
-        reply_markup=build_main_menu(),
-        parse_mode="HTML"
+        text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
     )
-    await callback.answer()
 
-@dp.callback_query(F.data == "back_admin")
-async def back_to_admin(callback: CallbackQuery, state: FSMContext):
-    """Admin Panel ကိုပြန်သွားမယ်"""
-    await admin_panel(callback, state)
-
-@dp.callback_query(F.data == "back_posts")
-async def back_to_posts(callback: CallbackQuery, state: FSMContext):
-    """Posts Editor ကိုပြန်သွားမယ်"""
-    await posts_editor(callback, state)
-
-@dp.callback_query(F.data == "stop_editor")
-async def stop_editor(callback: CallbackQuery, state: FSMContext):
-    """Editor ကိုရပ်ပြီး Main Menu ပြန်သွားမယ်"""
-    db.settings["editing_mode"] = False
-    db.settings["current_editor"] = None
-    db.settings["current_message"] = None
-    db.save_all()
+@dp.callback_query(F.data.startswith("del_chan_"))
+async def force_delete_channel(callback: CallbackQuery):
+    channel_id = int(callback.data.split("_")[2])
     
-    await back_to_main(callback, state)
-
-# ==================== ERROR HANDLER ====================
-@dp.errors()
-async def errors_handler(update: Update, exception: Exception):
-    logger.error(f"Update {update} caused error {exception}")
-    return True
-
-# ==================== MAIN FUNCTION ====================
-async def main():
-    """Bot ကိုစတင်မယ်"""
-    logger.info("Starting bot...")
+    with db.get_connection() as conn:
+        conn.execute("DELETE FROM force_channels WHERE id = ?", (channel_id,))
     
-    # Default Main Menu Buttons (အကယ်၍မရှိသေးရင်)
-    if not db.get_main_menu():
-        default_buttons = ["🎬 Movies", "📺 Anime", "🎥 Trailers", "📞 Contact"]
-        for btn_text in default_buttons:
-            db.add_main_menu_button(Button(
-                text=btn_text,
-                button_type=ButtonType.CALLBACK,
-                data=f"category_{btn_text.lower()}"
-            ))
-    
-    # Default Welcome Message
-    if not db.welcomes["messages"]:
-        db.add_welcome("မင်္ဂလာပါ {mention}!\n\nAnime Japan ကိုကြိုဆိုပါတယ်။\nအောက်က Menu လေးတွေကနေ ရွေးကြည့်နော်။")
-    
-    await dp.start_polling(bot)
+    await callback.answer("Channel deleted!")
+    await force_list(callback)
 
-if __name__ == "__main__":
-    asyncio.run(main())
+# ==================== ADMIN CALLBACKS ====================
+@dp.callback_query(F.data == "admin_back")
+async def admin_back(callback: CallbackQuery):
+    if callback.from_user.id != OWNER_ID:
+        return
+    
+    await admin_panel(callback.message)
+
+# ==================== WITHDRAW CONFIRM CALLBACKS ====================
+@dp.callback_query(F.data.startswith("confirm_withdraw_"))
+async def confirm_withdraw(callback: CallbackQuery):
+    if callback.from_user.id != OWNER_ID:
+        return
+    
+    user_id = int(callback.data.split("_")[2])
+    
+    with db.get_connection() as conn:
+        user = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
+        
+        if not user:
+            await callback.answer("User not found!")
+            return
+        
+        # Generate transfer ID
+        transfer_id = f"TRX{random.randint(100000, 999999)}"
+        
+        # Update user balance (deduct)
+        conn.execute(
+            "UPDATE users SET balance = 0 WHERE user_id = ?",
+            (user_id,)
+        )
+        
+        # Send receipt to user
+        receipt_text = f"""
+📤 **ငွေထုတ်ပြေစာ**
+━━━━━━━━━━━━━━━━
+👤 ငွေထုတ်ယူသူအမည် - {user['full_name']}
+🆔 User ID - `{user['user_id']}`
+💰 ထုတ်ယူခဲ့သည့်ငွေ - {user['balance']} ကျပ်
+💳 ငွေပေးပို့သူအမည် - Owner
+📤 လွဲပေးခဲ့သည့်ငွေ - {user['balance']} ကျပ်
+⏰ အချိန် - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+🔢 ပြေစာ Transfer ID - `{transfer_id}`
+━━━━━━━━━━━━━━━━
+✨ ကျေးဇူးတင်ပါသည်။
+        """
+        
+        await bot.send_message(user_id, receipt_text)
+        
+        # Send to group
+        group_text = f"{user['full_name']} နက် {user['balance']} ကျပ် ထုတ်ယူပြီးပါပြီ။ အကောင့်ထဲဝင်စစ်ပေးပါ။"
+        await bot.send_message(GROUP_ID, group_text)
+    
+    await callback.message.edit_text(f"✅ Withdraw confirmed for user {user_id}")
+    await callback.answer("Withdraw confirmed!")
+
+@dp.callback_query(F.data.startswith("cancel_withdraw_"))
+async def cancel_withdraw(callback: CallbackQuery):
+    if callback.from_user.id != OWNER_ID:
+        return
+    
+    user_id = int(callback.data.split("_")[2])
+    
+    await bot.send_message(
+        user_id,
+        "❌ သင့်ငွေထုတ်ယူရန် တောင်းဆိုချက်ကို ပယ်ဖျက်လိုက်ပါသည်။"
+    )
+    
+    await callback.message.edit_text(f"✅ Withdraw cancelled for user {user_id}")
+    await callback.answer("Withdraw cancelled!")
+
+# ==================== LIMIT CONFIRM CALLBACKS ====================
+@dp.callback_query(F.data.startswith("confirm_limit_"))
+async def confirm_limit(callback: CallbackQuery):
+    if callback.from_user.id != OWNER_ID:
+        return
+    
+    user_id = int(callback.data.split("_")[2])
+    
+    with db.get_connection() as conn:
+        conn.execute(
+            "UPDATE users SET invite_limit = 200 WHERE user_id = ?",
+            (user_id,)
+        )
+    
+    await bot.send_message(
+        user_id,
+        "✅ သင်၏ Invite Limit ကို 200 သို့တိုးပေးလိုက်ပါပြီ။"
+    )
+    
+    await callback.message.edit_text(f"✅ Limit increased for user {user_id}")
+    await callback.answer("Limit confirmed!")
+
+@dp.callback_query(F.data.startswith("cancel_limit_"))
+async def cancel_limit(callback: CallbackQuery):
+    if callback.from_user.id != OWNER_ID:
+        return
+    
+    user_id = int(callback.data.split("_")[2])
+    
+    await bot.send_message(
+        user_id,
+        "
