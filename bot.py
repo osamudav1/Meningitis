@@ -59,8 +59,7 @@ class Database:
                 join_date TEXT,
                 has_played BOOLEAN DEFAULT 0,
                 referred_by INTEGER DEFAULT 0,
-                is_banned BOOLEAN DEFAULT 0,
-                ban_reason TEXT
+                is_banned BOOLEAN DEFAULT 0
             )''')
             
             # Game settings
@@ -113,10 +112,7 @@ class Database:
             
             # Banned users
             conn.execute('''CREATE TABLE IF NOT EXISTS banned_users (
-                user_id INTEGER PRIMARY KEY,
-                reason TEXT,
-                banned_date TEXT,
-                banned_by INTEGER
+                user_id INTEGER PRIMARY KEY
             )''')
             
             # Insert defaults
@@ -133,7 +129,7 @@ class AdminStates(StatesGroup):
     waiting_for_welcome_text = State()
     waiting_for_welcome_buttons = State()
     waiting_for_welcome_photo = State()
-    waiting_for_ban_reason = State()
+    waiting_for_ban_id = State()
     waiting_for_unban_id = State()
     waiting_for_restore_file = State()
 
@@ -210,9 +206,8 @@ def force_kb(channels):
 # ==================== CHECK BAN ====================
 async def is_banned(user_id):
     with db.get_connection() as conn:
-        user = conn.execute("SELECT is_banned FROM users WHERE user_id=?", (user_id,)).fetchone()
         banned = conn.execute("SELECT * FROM banned_users WHERE user_id=?", (user_id,)).fetchone()
-    return (user and user['is_banned']) or (banned is not None)
+    return banned is not None
 
 # ==================== START ====================
 @dp.message(Command("start"))
@@ -221,24 +216,19 @@ async def start(message: Message):
     username = message.from_user.username or "No username"
     full_name = message.from_user.full_name
     
-    # Get referrer from link
+    # Get referrer from link (direct user_id)
     referrer_id = None
     if message.text and len(message.text.split()) > 1:
         try:
-            ref = message.text.split()[1]
-            if ref.startswith("ref_"):
-                referrer_id = int(ref.replace("ref_", ""))
-                if referrer_id == user_id:
-                    referrer_id = None
+            referrer_id = int(message.text.split()[1])
+            if referrer_id == user_id:
+                referrer_id = None
         except:
             pass
     
     # Check ban
     if await is_banned(user_id):
-        with db.get_connection() as conn:
-            ban = conn.execute("SELECT * FROM banned_users WHERE user_id=?", (user_id,)).fetchone()
-        reason = ban['reason'] if ban else "N/A"
-        await message.answer(f"❌ ပိတ်ပင်ခံထားရပါသည်။\nအကြောင်း: {reason}")
+        await message.answer(f"❌ သင်သည် Bot မှ ပိတ်ပင်ခံထားရပါသည်။")
         return
     
     # Add user to DB
@@ -251,7 +241,7 @@ async def start(message: Message):
                 (user_id, username, full_name, datetime.now().isoformat(), referrer_id or 0)
             )
             
-            # Handle referral
+            # Handle referral notification
             if referrer_id:
                 referrer = conn.execute("SELECT * FROM users WHERE user_id=?", (referrer_id,)).fetchone()
                 if referrer:
@@ -263,14 +253,14 @@ async def start(message: Message):
                     # Notify referrer
                     try:
                         text = f"""
-👋 **လူသစ်ခေါ်ယူမှု**
+👋 **လူသစ်ခေါ်ယူမှုအကြောင်းကြားစာ**
+━━━━━━━━━━━━━━━━
+သင့် Link ကနေ လူသစ်ဝင်ရောက်လာပါပြီ။
 
-သင့် Link ကနေ လူသစ်ဝင်လာပါပြီ။
-
-👤 {full_name}
-🆔 {user_id}
-⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-
+👤 နာမည်: {full_name}
+🆔 User ID: `{user_id}`
+⏰ အချိန်: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+━━━━━━━━━━━━━━━━
 💰 သူကံစမ်းမှသာ Bonus 50 ကျပ်ရမည်။
                         """
                         await bot.send_message(referrer_id, text)
@@ -280,7 +270,7 @@ async def start(message: Message):
     # Check channels
     joined, not_joined = await check_channels(user_id)
     if not joined:
-        await message.answer("🔒 Channel များ Join ပေးပါ။", reply_markup=force_kb(not_joined))
+        await message.answer("🔒 ကျေးဇူးပြု၍ အောက်ပါ Channel များကို Join ပေးပါ။", reply_markup=force_kb(not_joined))
         return
     
     # Welcome message
@@ -300,7 +290,7 @@ async def start(message: Message):
         await message.answer(text, reply_markup=main_menu())
     
     if buttons:
-        await message.answer("🔗 Link များ", reply_markup=make_buttons(buttons))
+        await message.answer("🔗 **အသုံးဝင်သော Link များ**", reply_markup=make_buttons(buttons))
 
 @dp.callback_query(F.data == "check_join")
 async def check_join(callback: CallbackQuery):
@@ -309,7 +299,7 @@ async def check_join(callback: CallbackQuery):
         await callback.message.delete()
         await start(callback.message)
     else:
-        await callback.answer("Channel များ Join ပါ။", show_alert=True)
+        await callback.answer("ကျေးဇူးပြု၍ Channel များကို Join ပါ။", show_alert=True)
 
 # ==================== MY INFO ====================
 @dp.message(F.text == "📊 My Info")
@@ -324,16 +314,16 @@ async def my_info(message: Message):
             return
         
         text = f"""
-📋 **My Info**
-━━━━━━━━━━━━━━
-👤 {user['full_name']}
-🆔 `{user['user_id']}`
-👥 ခေါ်ယူထားသူ: {user['total_invite']} ယောက်
-💰 လက်ကျန်: {user['balance']} ကျပ်
-🎲 နောက်ဆုံးကံစမ်း: {user['last_game_amount']} ကျပ်
-⏰ အချိန်: {user['last_game_time'] or 'မရှိ'}
-📅 ယနေ့ကံစမ်း: {'ပြီး' if user['has_played'] else 'မရှိ'}
-━━━━━━━━━━━━━━
+📋 **My Information**
+━━━━━━━━━━━━━━━━
+👤 နာမည် - {user['full_name']}
+🆔 User ID - `{user['user_id']}`
+👥 ခေါ်ယူထားသူဦးရေ - {user['total_invite']} ယောက်
+💰 လက်ကျန်ငွေ - {user['balance']} ကျပ်
+🎲 နောက်ဆုံးကံစမ်းခဲ့သည့်ငွေ - {user['last_game_amount']} ကျပ်
+⏰ နောက်ဆုံးကံစမ်းခဲ့သည့်အချိန် - {user['last_game_time'] or 'မရှိသေးပါ'}
+📅 ယနေ့ကံစမ်းပြီးပြီလား - {'ပြီးပါပြီ' if user['has_played'] else 'မရှိသေးပါ'}
+━━━━━━━━━━━━━━━━
         """
         await message.answer(text, reply_markup=main_menu())
 
@@ -350,18 +340,22 @@ async def invite(message: Message):
             return
         
         bot_info = await bot.get_me()
-        link = f"https://t.me/{bot_info.username}?start=ref_{user_id}"
+        # Generate invite link - WITHOUT ref_ prefix (direct user_id)
+        invite_link = f"https://t.me/{bot_info.username}?start={user_id}"
         
         text = f"""
 👥 **Invite Friends**
 
-လူတစ်ယောက်ခေါ်ရင် 50 ကျပ်
-ခေါ်လာတဲ့လူ ကံစမ်းမှ ရမည်။
+လူတစ်ယောက်ခေါ်ရင် 50 ကျပ်ရမည်။
+ခေါ်လာတဲ့လူက ကံစမ်းမှသာ ရမည်။
 
-သင့်ခေါ်ယူထားသူ: {user['total_invite']} ယောက်
-ခေါ်နိုင်တဲ့အများဆုံး: {user['invite_limit']} ယောက်
+သင်၏လက်ရှိခေါ်ဆောင်ထားသူ: {user['total_invite']} ယောက်
+ခေါ်ဆောင်နိုင်သည့်အများဆုံး: {user['invite_limit']} ယောက်
 
-**Link:** `{link}`
+**သင်၏ Invite Link:**
+`{invite_link}`
+
+👉 အထက်ပါ Link ကိုနှိပ်၍ Copy ကူးနိုင်ပါသည်။
         """
         await message.answer(text, reply_markup=main_menu())
         
@@ -372,10 +366,11 @@ async def invite(message: Message):
         ).fetchall()
         
         if refs:
-            t = "**လတ်တလော ခေါ်ယူထားသူမျာ**\n\n"
+            t = "**လတ်တလော ခေါ်ယူထားသူများ**\n\n"
             for r in refs:
                 t += f"👤 {r['full_name']}\n"
-                t += f"💰 Bonus: {'ရပြီ' if r['bonus_paid'] else 'မရသေး'}\n\n"
+                t += f"🆔 `{r['referred_id']}`\n"
+                t += f"💰 Bonus: {'ရပြီ' if r['bonus_paid'] else 'မရသေး (ကံစမ်းရန်)'}\n\n"
             await message.answer(t)
         
         # Check limit
@@ -384,7 +379,7 @@ async def invite(message: Message):
                 [InlineKeyboardButton(text="📢 Request More", callback_data="request_limit")],
                 [InlineKeyboardButton(text="🔙 Back", callback_data="back_to_main")]
             ])
-            await message.answer("⚠️ Limit ပြည့်သွားပါပြီ။", reply_markup=kb)
+            await message.answer("⚠️ သင်၏ Invite Limit ပြည့်သွားပါပြီ။ Limit တိုးရန် Request လုပ်ပါ။", reply_markup=kb)
 
 @dp.callback_query(F.data == "request_limit")
 async def request_limit(callback: CallbackQuery):
@@ -396,20 +391,20 @@ async def request_limit(callback: CallbackQuery):
             return
         
         text = f"""
-📢 **Limit Request**
-━━━━━━━━━━━━━━
-👤 {user['full_name']}
-🆔 `{user['user_id']}`
-👥 Total: {user['total_invite']}
-📊 Limit: {user['invite_limit']}
-━━━━━━━━━━━━━━
+📢 **Limit တိုးရန် Request**
+━━━━━━━━━━━━━━━━
+👤 နာမည် - {user['full_name']}
+🆔 User ID - `{user['user_id']}`
+👥 Total Invite - {user['total_invite']}
+📊 Current Limit - {user['invite_limit']}
+━━━━━━━━━━━━━━━━
         """
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="✅ Confirm", callback_data=f"confirm_limit_{user_id}")],
             [InlineKeyboardButton(text="❌ Cancel", callback_data=f"cancel_limit_{user_id}")]
         ])
         await bot.send_message(OWNER_ID, text, reply_markup=kb)
-        await callback.answer("Request sent!", show_alert=True)
+        await callback.answer("Request sent to owner!", show_alert=True)
 
 @dp.callback_query(F.data == "back_to_main")
 async def back_to_main(callback: CallbackQuery):
@@ -427,7 +422,7 @@ async def play_game(message: Message):
     
     joined, not_joined = await check_channels(user_id)
     if not joined:
-        await message.answer("🔒 Channel များ Join ပါ။", reply_markup=force_kb(not_joined))
+        await message.answer("🔒 ကျေးဇူးပြု၍ အောက်ပါ Channel များကို Join ပေးပါ။", reply_markup=force_kb(not_joined))
         return
     
     with db.get_connection() as conn:
@@ -435,15 +430,15 @@ async def play_game(message: Message):
         user = conn.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone()
         
         if not game['game_active']:
-            await message.answer("ဂိမ်းမစတင်သေးပါ။")
+            await message.answer("ဂိမ်းမစတင်သေးပါ။ Owner စတင်ရန်စောင့်ဆိုင်းပါ။")
             return
         
         if game['current_amount'] <= 0:
-            await message.answer("ငွေကုန်သွားပါပြီ။")
+            await message.answer("ကံစမ်းငွေကုန်သွားပါပြီ။ နောက်ရက်မှကံစမ်းပါ။")
             return
         
         if user['has_played']:
-            await message.answer("ယနေ့ ကံစမ်းပြီးပါပြီ။")
+            await message.answer("ယနေ့အတွက် သင်ကံစမ်းပြီးပါပြီ။ နောက်ရက်မှပြန်ကံစမ်းပါ။")
             return
         
         # Calculate amount
@@ -477,33 +472,38 @@ async def play_game(message: Message):
         # Get updated user
         updated_user = conn.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone()
         
-        # Check referral bonus
+        # CHECK REFERRAL BONUS - Give bonus to referrer
         if user['referred_by'] and user['referred_by'] > 0:
-            ref = conn.execute("SELECT * FROM referrals WHERE referred_id=?", (user_id,)).fetchone()
-            if ref and not ref['bonus_paid']:
-                # Give bonus to referrer
+            ref = conn.execute("SELECT * FROM referrals WHERE referred_id=? AND bonus_paid=0", (user_id,)).fetchone()
+            if ref:
+                # Give bonus to referrer (+50 balance and +1 invite count)
                 conn.execute(
                     "UPDATE users SET balance=balance+50, total_invite=total_invite+1 WHERE user_id=?",
                     (user['referred_by'],)
                 )
                 conn.execute("UPDATE referrals SET bonus_paid=1 WHERE referred_id=?", (user_id,))
                 
-                # Get referrer
+                # Get referrer for notification
                 referrer = conn.execute("SELECT * FROM users WHERE user_id=?", (user['referred_by'],)).fetchone()
                 
                 # Notify referrer
                 try:
                     text = f"""
-🎉 **Referral Bonus**
-
+🎉 **Referral Bonus ရရှိပါပြီ!**
+━━━━━━━━━━━━━━━━
 သင်ခေါ်ယူထားသူ {user['full_name']} ကံစမ်းလိုက်ပါပြီ။
 
-💰 Bonus: 50 ကျပ်
-👥 Invite: +1
+👤 ခေါ်ယူထားသူ: {user['full_name']}
+🆔 User ID: `{user_id}`
 
-📊 ယခုအခြေအနေ
-👥 ခေါ်ယူထားသူ: {referrer['total_invite']+1} ယောက်
-💰 လက်ကျန်: {referrer['balance']+50} ကျပ်
+💰 ရရှိသော Bonus: 50 ကျပ်
+👥 ခေါ်ယူထားသူဦးရေ: +1
+
+📊 **သင်၏ ယခုအခြေအနေ**
+━━━━━━━━━━━━━━━━
+👥 စုစုပေါင်းခေါ်ယူထားသူ: {referrer['total_invite'] + 1} ယောက်
+💰 လက်ကျန်ငွေ: {referrer['balance'] + 50} ကျပ်
+━━━━━━━━━━━━━━━━
                     """
                     await bot.send_message(user['referred_by'], text)
                 except:
@@ -513,7 +513,7 @@ async def play_game(message: Message):
                 try:
                     await bot.send_message(
                         GROUP_ID,
-                        f"🎉 Referral Bonus: {referrer['full_name']} က {user['full_name']} ကံစမ်းလို့ 50 ကျပ် ရပါတယ်။"
+                        f"🎉 **Referral Bonus အကြောင်းကြားစာ**\n\n👤 {referrer['full_name']} နှင့် {user['full_name']} တို့ Referral စနစ်အရ\n💰 {referrer['full_name']} အကောင့်ထဲသို့ 50 ကျပ် ထည့်ပေးလိုက်ပါပြီ။\n👥 ခေါ်ယူထားသူဦးရေ 1 တိုးလာပါပြီ။"
                     )
                 except:
                     pass
@@ -527,12 +527,13 @@ async def play_game(message: Message):
         # Send result
         result = f"""
 🎲 **ကံစမ်းရလဒ်**
-━━━━━━━━━━━━━━
-👤 {user['full_name']}
-💰 ရငွေ: {amount} ကျပ်
-💵 လက်ကျန်: {updated_user['balance']} ကျပ်
-⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━
+👤 နာမည် - {user['full_name']}
+💰 ရရှိငွေ - {amount} ကျပ်
+💵 လက်ကျန်ငွေ - {updated_user['balance']} ကျပ်
+⏰ အချိန် - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+━━━━━━━━━━━━━━━━
+✨ ဆက်လက်ကံစမ်းရန် ကံစမ်းမည်ကိုနှိပ်ပါ။
         """
         await message.answer(result, reply_markup=main_menu())
         
@@ -545,17 +546,18 @@ async def play_game(message: Message):
                 (today,)
             ).fetchall()
             
-            text = f"📊 **ယနေ့ရလဒ်များ ({today})**\n\n"
+            text = f"📊 **ယနေ့ဂိမ်းပြီးဆုံးချိန် ရလဒ်များ ({today})**\n\n"
             total = 0
             for w in winners:
-                text += f"👤 {w['full_name']}\n"
-                text += f"💰 {w['amount']} ကျပ်\n"
+                text += f"👤 {w['full_name']} (@{w['username']})\n"
+                text += f"🆔 `{w['user_id']}`\n"
+                text += f"💰 ရရှိငွေ - {w['amount']} ကျပ်\n"
                 text += f"⏰ {w['win_time']}\n\n"
                 total += w['amount']
-            text += f"စုစုပေါင်း: {total} ကျပ်"
+            text += f"━━━━━━━━━━━━━━━━\nစုစုပေါင်းပေးအပ်ငွေ: {total} ကျပ်"
             
             await bot.send_message(OWNER_ID, text)
-            await bot.send_message(OWNER_ID, "⚠️ ငွေကုန်သွားပါပြီ။ ဂိမ်းရပ်နားထားပါသည်။")
+            await bot.send_message(OWNER_ID, "⚠️ ကံစမ်းငွေကုန်သွားပါပြီ။ ဂိမ်းရပ်နားထားပါသည်။")
 
 # ==================== WITHDRAW ====================
 @dp.message(F.text == "💰 ထုတ်ယူရန်")
@@ -567,7 +569,7 @@ async def withdraw_start(message: Message, state: FSMContext):
     with db.get_connection() as conn:
         user = conn.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone()
         if not user or user['balance'] < 1500:
-            await message.answer("❌ အနည်းဆုံး 1500 ကျပ်ရှိမှ ထုတ်နိုင်ပါသည်။")
+            await message.answer("❌ အနည်းဆုံး 1500 ကျပ်ရှိမှထုတ်နိုင်ပါသည်။", reply_markup=main_menu())
             return
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -576,7 +578,7 @@ async def withdraw_start(message: Message, state: FSMContext):
         [InlineKeyboardButton(text="🔙 Back", callback_data="back_to_main")]
     ])
     
-    await message.answer("💰 ငွေထုတ်ယူရန်\nငွေလက်ခံမည့်နည်းလမ်းရွေးပါ။", reply_markup=kb)
+    await message.answer("💰 **ငွေထုတ်ယူရန်**\n\nကျေးဇူးပြု၍ သင့်ငွေလက်ခံမည့်နည်းလမ်းကို ရွေးချယ်ပါ။", reply_markup=kb)
 
 @dp.callback_query(F.data.startswith("pay_"))
 async def withdraw_method(callback: CallbackQuery, state: FSMContext):
@@ -584,7 +586,7 @@ async def withdraw_method(callback: CallbackQuery, state: FSMContext):
     await state.update_data(method=method.upper())
     
     await callback.message.edit_text(
-        f"💳 {method.upper()} အကောင့်နာမည် ရိုက်ထည့်ပါ။",
+        f"💳 **{method.upper()} ငွေထုတ်ယူရန်**\n\nကျေးဇူးပြု၍ သင့် အကောင့်နာမည် ကို ရိုက်ထည့်ပါ။\nဥပမာ - {method.upper()} အကောင့်နာမည်",
         reply_markup=back_btn("back_to_main")
     )
     await state.set_state(UserStates.waiting_for_account_name)
@@ -592,7 +594,7 @@ async def withdraw_method(callback: CallbackQuery, state: FSMContext):
 @dp.message(UserStates.waiting_for_account_name)
 async def withdraw_account(message: Message, state: FSMContext):
     await state.update_data(account=message.text.strip())
-    await message.answer("📞 ဖုန်းနံပါတ် ရိုက်ထည့်ပါ။")
+    await message.answer("📞 **ဖုန်းနံပါတ် ထည့်ပါ**\n\nကျေးဇူးပြု၍ သင့် ဖုန်းနံပါတ် ကို ရိုက်ထည့်ပါ။\nဥပမာ - 09793251923")
     await state.set_state(UserStates.waiting_for_phone)
 
 @dp.message(UserStates.waiting_for_phone)
@@ -604,8 +606,9 @@ async def withdraw_phone(message: Message, state: FSMContext):
         user = conn.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone()
     
     await message.answer(
-        f"💰 ထုတ်ယူမည့်ငွေပမာဏ ရိုက်ထည့်ပါ။\n"
-        f"လက်ကျန်: {user['balance']} ကျပ်\n"
+        f"💰 **ငွေပမာဏ ထည့်ပါ**\n\n"
+        f"သင့်လက်ကျန်ငွေ: {user['balance']} ကျပ်\n"
+        f"ထုတ်ယူလိုသောငွေပမာဏကို ရိုက်ထည့်ပါ။\n"
         f"(အနည်းဆုံး 1500 ကျပ်)"
     )
     await state.set_state(UserStates.waiting_for_withdraw_amount)
@@ -624,12 +627,12 @@ async def withdraw_amount(message: Message, state: FSMContext):
             user = conn.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone()
             
             if amount > user['balance']:
-                await message.answer(f"လက်ကျန် {user['balance']} ကျပ်သာရှိသည်။")
+                await message.answer(f"သင့်လက်ကျန်ငွေ {user['balance']} ကျပ်သာရှိသည်။ ထပ်မံကြိုးစားပါ။")
                 await state.clear()
                 return
             
             if amount < 1500:
-                await message.answer("❌ အနည်းဆုံး 1500 ကျပ်")
+                await message.answer("❌ အနည်းဆုံး 1500 ကျပ်မှ ထုတ်ယူနိုင်ပါသည်။")
                 await state.clear()
                 return
             
@@ -641,13 +644,13 @@ async def withdraw_amount(message: Message, state: FSMContext):
             text = f"""
 📤 **ငွေထုတ်ယူရန် တောင်းဆိုချက်**
 ━━━━━━━━━━━━━━━━
-👤 {full_name}
-🆔 `{user_id}`
-💰 ထုတ်မည့်ငွေ: {amount} ကျပ်
-💳 နည်းလမ်း: {data['method']}
-📝 အကောင့်: {data['account']}
-📞 ဖုန်း: {data['phone']}
-💵 လက်ကျန်: {user['balance']} ကျပ်
+👤 အမည် - {full_name}
+🆔 User ID - `{user_id}`
+💰 ထုတ်ယူမည့်ငွေ - {amount} ကျပ်
+💳 ငွေလက်ခံမည့် အကောင့် - {data['method']}
+📝 အကောင့်နာမည် - {data['account']}
+📞 ဖုန်းနံပါတ် - {data['phone']}
+💵 လက်ကျန်ငွေ - {user['balance']} ကျပ်
 ━━━━━━━━━━━━━━━━
             """
             
@@ -658,11 +661,11 @@ async def withdraw_amount(message: Message, state: FSMContext):
             
             await bot.send_message(OWNER_ID, text, reply_markup=kb)
         
-        await message.answer("✅ တောင်းဆိုချက် ပို့ပြီးပါပြီ။ ခွင့်ပြုချက်စောင့်ပါ။", reply_markup=main_menu())
+        await message.answer("✅ သင်၏တောင်းဆိုချက်ကို Owner ထံပို့လိုက်ပါပြီ။ ခွင့်ပြုချက်စောင့်ဆိုင်းပါ။", reply_markup=main_menu())
         await state.clear()
         
     except ValueError:
-        await message.answer("❌ ဂဏန်းသာရိုက်ပါ။")
+        await message.answer("❌ ကျေးဇူးပြု၍ ငွေပမာဏကို ဂဏန်းသာရိုက်ထည့်ပါ။")
 
 # ==================== ADMIN ====================
 @dp.message(Command("admin"))
@@ -671,26 +674,26 @@ async def admin(message: Message):
         return
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💰 ငွေထည့်", callback_data="admin_add"),
+        [InlineKeyboardButton(text="💰 ငွေထည့်ရန်", callback_data="admin_add"),
          InlineKeyboardButton(text="📊 Game Status", callback_data="admin_status")],
         [InlineKeyboardButton(text="🔐 Force Channel", callback_data="admin_force"),
          InlineKeyboardButton(text="📈 Statistics", callback_data="admin_stats")],
-        [InlineKeyboardButton(text="🎮 ဂိမ်းစတင်", callback_data="admin_start"),
-         InlineKeyboardButton(text="🔄 Reset Plays", callback_data="admin_reset")],
+        [InlineKeyboardButton(text="🎮 ဂိမ်းစတင်ရန်", callback_data="admin_start"),
+         InlineKeyboardButton(text="🔄 Reset User Plays", callback_data="admin_reset")],
         [InlineKeyboardButton(text="📢 Broadcast", callback_data="admin_broadcast"),
-         InlineKeyboardButton(text="👋 Welcome", callback_data="admin_welcome")],
+         InlineKeyboardButton(text="👋 Welcome Settings", callback_data="admin_welcome")],
         [InlineKeyboardButton(text="🚫 Ban User", callback_data="admin_ban"),
          InlineKeyboardButton(text="✅ Unban User", callback_data="admin_unban")],
-        [InlineKeyboardButton(text="📋 Banned List", callback_data="admin_banned")],
-        [InlineKeyboardButton(text="💾 Backup", callback_data="admin_backup"),
-         InlineKeyboardButton(text="🔄 Restore", callback_data="admin_restore")]
+        [InlineKeyboardButton(text="📋 Banned List", callback_data="admin_banned"),
+         InlineKeyboardButton(text="💾 Backup Data", callback_data="admin_backup")],
+        [InlineKeyboardButton(text="🔄 Restore Data", callback_data="admin_restore")]
     ])
     
-    await message.answer("👑 **Admin Panel**", reply_markup=kb)
+    await message.answer("👑 **Admin Panel**\n\nအောက်ပါလုပ်ဆောင်ချက်များကို ရွေးချယ်ပါ။", reply_markup=kb)
 
 @dp.callback_query(F.data == "admin_add")
 async def admin_add(callback: CallbackQuery, state: FSMContext):
-    await callback.message.edit_text("💰 ငွေပမာဏ ရိုက်ထည့်ပါ။", reply_markup=back_btn())
+    await callback.message.edit_text("💰 ကံစမ်းငွေထည့်ရန်\n\nငွေပမာဏ ရိုက်ထည့်ပါ။", reply_markup=back_btn())
     await state.set_state(AdminStates.waiting_for_amount)
 
 @dp.message(AdminStates.waiting_for_amount)
@@ -708,7 +711,7 @@ async def process_add(message: Message, state: FSMContext):
                 (new_total, new_current, today)
             )
         
-        await message.answer(f"✅ ငွေထည့်ပြီးပါပြီ။ လက်ရှိ: {new_current} ကျပ်")
+        await message.answer(f"✅ ငွေထည့်ပြီးပါပြီ။ လက်ရှိငွေ: {new_current} ကျပ်")
         await state.clear()
     except:
         await message.answer("❌ နံပါတ်သာရိုက်ပါ။")
@@ -728,7 +731,7 @@ async def admin_start(callback: CallbackQuery):
 async def admin_reset(callback: CallbackQuery):
     with db.get_connection() as conn:
         conn.execute("UPDATE users SET has_played=0")
-    await callback.answer("Reset လုပ်ပြီးပါပြီ။")
+    await callback.answer("ယနေ့အတွက် User အားလုံး ကံစမ်းခွင့်ပြန်ရပါပြီ။")
     await admin(callback.message)
 
 @dp.callback_query(F.data == "admin_status")
@@ -743,14 +746,14 @@ async def admin_status(callback: CallbackQuery):
     
     text = f"""
 📊 **Game Status**
-━━━━━━━━━━━━━━
-💰 စုစုပေါင်း: {game['total_amount']} ကျပ်
-💵 လက်ကျန်: {game['current_amount']} ကျပ်
-🎮 အခြေအနေ: {'ဖွင့်' if game['game_active'] else 'ပိတ်'}
-👥 ယနေ့ကစားသူ: {players} ယောက်
-🏆 ယနေ့ဆုရှင်: {winners} ယောက်
-📅 ရက်စွဲ: {game['game_date'] or 'မရှိ'}
-━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━
+💰 စုစုပေါင်းငွေ - {game['total_amount']} ကျပ်
+💵 လက်ကျန်ငွေ - {game['current_amount']} ကျပ်
+🎮 ဂိမ်းအခြေအနေ - {'ဖွင့်ထားသည်' if game['game_active'] else 'ပိတ်ထားသည်'}
+👥 ယနေ့ကစားသူ - {players} ယောက်
+🏆 ယနေ့ဆုရှင် - {winners} ယောက်
+📅 ဂိမ်းရက်စွဲ - {game['game_date'] or 'မသတ်မှတ်ရသေး'}
+━━━━━━━━━━━━━━━━
     """
     await callback.message.edit_text(text, reply_markup=back_btn())
 
@@ -769,19 +772,19 @@ async def admin_stats(callback: CallbackQuery):
         paid = conn.execute("SELECT COUNT(*) as c FROM referrals WHERE bonus_paid=1").fetchone()['c']
     
     text = f"""
-📈 **Statistics**
-━━━━━━━━━━━━━━
-👥 စုစုပေါင်း: {total_users}
-✅ အသုံးပြုခွင့်ရှိ: {active}
-🚫 ပိတ်ပင်ခံရ: {banned}
-💰 လက်ကျန်စုစုပေါင်း: {balance} ကျပ်
-🎲 ဂိမ်းလက်ကျန်: {game['current_amount']} ကျပ်
-🔐 Force Channels: {channels}
-🏆 ဆုရှင်စုစုပေါင်း: {winners}
-💸 ပေးအပ်ငွေစုစုပေါင်း: {given} ကျပ်
-👥 စုစုပေါင်းခေါ်ယူမှု: {refs}
-💰 Referral Bonus: {paid * 50} ကျပ်
-━━━━━━━━━━━━━━
+📈 **Bot Statistics**
+━━━━━━━━━━━━━━━━
+👥 စုစုပေါင်းအသုံးပြုသူ - {total_users}
+✅ အသုံးပြုခွင့်ရှိသူ - {active}
+🚫 ပိတ်ပင်ခံထားရသူ - {banned}
+💰 စုစုပေါင်းလက်ကျန်ငွေ - {balance} ကျပ်
+🎲 ဂိမ်းလက်ကျန်ငွေ - {game['current_amount']} ကျပ်
+🔐 Force Channels - {channels} ခု
+🏆 စုစုပေါင်းဆုရှင် - {winners} ဦး
+💸 စုစုပေါင်းပေးအပ်ငွေ - {given} ကျပ်
+👥 စုစုပေါင်းခေါ်ယူမှု - {refs} ကြိမ်
+💰 ပေးပြီးသော Referral Bonus - {paid * 50} ကျပ်
+━━━━━━━━━━━━━━━━
     """
     await callback.message.edit_text(text, reply_markup=back_btn())
 
@@ -807,24 +810,28 @@ async def confirm_withdraw(callback: CallbackQuery):
         
         text = f"""
 📤 **ငွေထုတ်ပြေစာ**
-━━━━━━━━━━━━━━
-👤 {user['full_name']}
-🆔 `{user['user_id']}`
-💰 ထုတ်ငွေ: {amount} ကျပ်
-⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-🔢 ID: {tid}
-━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━
+👤 ငွေထုတ်ယူသူအမည် - {user['full_name']}
+🆔 User ID - `{user['user_id']}`
+💰 ထုတ်ယူခဲ့သည့်ငွေ - {amount} ကျပ်
+💳 ငွေပေးပို့သူအမည် - Owner
+📤 လွဲပေးခဲ့သည့်ငွေ - {amount} ကျပ်
+⏰ အချိန် - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+🔢 ပြေစာ Transfer ID - `{tid}`
+━━━━━━━━━━━━━━━━
+✨ ကျေးဇူးတင်ပါသည်။
         """
         await bot.send_message(user_id, text)
-        await bot.send_message(GROUP_ID, f"{user['full_name']} နက် {amount} ကျပ် ထုတ်ယူပါသည်။")
+        await bot.send_message(GROUP_ID, f"{user['full_name']} နက် {amount} ကျပ် ထုတ်ယူပြီးပါပြီ။ အကောင့်ထဲဝင်စစ်ပေးပါ။")
     
-    await callback.message.edit_text(f"✅ Withdraw confirmed: {amount} ကျပ်")
+    await callback.message.edit_text(f"✅ Withdraw confirmed for user {user_id}\n\nငွေပမာဏ: {amount} ကျပ်")
+    await callback.answer("Withdraw confirmed!")
 
 @dp.callback_query(F.data.startswith("cancel_withdraw_"))
 async def cancel_withdraw(callback: CallbackQuery):
     user_id = int(callback.data.split("_")[2])
-    await bot.send_message(user_id, "❌ ငွေထုတ်တောင်းဆိုချက် ပယ်ဖျက်ခံရပါသည်။")
-    await callback.message.edit_text(f"✅ Withdraw cancelled")
+    await bot.send_message(user_id, "❌ သင့်ငွေထုတ်ယူရန် တောင်းဆိုချက်ကို ပယ်ဖျက်လိုက်ပါသည်။")
+    await callback.message.edit_text(f"✅ Withdraw cancelled for user {user_id}")
 
 # ==================== LIMIT CONFIRM ====================
 @dp.callback_query(F.data.startswith("confirm_limit_"))
@@ -834,34 +841,34 @@ async def confirm_limit(callback: CallbackQuery):
     with db.get_connection() as conn:
         conn.execute("UPDATE users SET invite_limit=200 WHERE user_id=?", (user_id,))
     
-    await bot.send_message(user_id, "✅ Limit 200 သို့တိုးပေးပါပြီ။")
-    await callback.message.edit_text(f"✅ Limit increased for {user_id}")
+    await bot.send_message(user_id, "✅ သင်၏ Invite Limit ကို 200 သို့တိုးပေးလိုက်ပါပြီ။")
+    await callback.message.edit_text(f"✅ Limit increased for user {user_id}")
 
 @dp.callback_query(F.data.startswith("cancel_limit_"))
 async def cancel_limit(callback: CallbackQuery):
     user_id = int(callback.data.split("_")[2])
-    await bot.send_message(user_id, "❌ Limit request cancelled")
-    await callback.message.edit_text(f"✅ Limit cancelled for {user_id}")
+    await bot.send_message(user_id, "❌ သင်၏ Limit တိုးရန် တောင်းဆိုချက်ကို ပယ်ဖျက်လိုက်ပါသည်။")
+    await callback.message.edit_text(f"✅ Limit request cancelled for user {user_id}")
 
 # ==================== FORCE CHANNEL ====================
 @dp.callback_query(F.data == "admin_force")
 async def force_menu(callback: CallbackQuery):
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ Add", callback_data="force_add"),
-         InlineKeyboardButton(text="📋 List", callback_data="force_list")],
+        [InlineKeyboardButton(text="➕ Add Channel", callback_data="force_add"),
+         InlineKeyboardButton(text="📋 List Channels", callback_data="force_list")],
         [InlineKeyboardButton(text="🔙 Back", callback_data="admin_back")]
     ])
-    await callback.message.edit_text("🔐 Force Channel Settings", reply_markup=kb)
+    await callback.message.edit_text("🔐 **Force Channel Settings**\n\nChannel တွေထည့်ရန် Add Channel ကိုနှိပ်ပါ။", reply_markup=kb)
 
 @dp.callback_query(F.data == "force_add")
 async def force_add(callback: CallbackQuery, state: FSMContext):
-    await callback.message.edit_text("➕ Channel Link ထည့်ပါ။", reply_markup=back_btn("admin_force"))
+    await callback.message.edit_text("➕ **Add Channel**\n\nChannel Link ကိုရိုက်ထည့်ပါ။\nဥပမာ: https://t.me/yourchannel", reply_markup=back_btn("admin_force"))
     await state.set_state(AdminStates.waiting_for_channel_link)
 
 @dp.message(AdminStates.waiting_for_channel_link)
 async def force_link(message: Message, state: FSMContext):
     await state.update_data(link=message.text.strip())
-    await message.answer("Channel Name ထည့်ပါ။")
+    await message.answer("Channel Name ကိုရိုက်ထည့်ပါ။")
     await state.set_state(AdminStates.waiting_for_channel_name)
 
 @dp.message(AdminStates.waiting_for_channel_name)
@@ -884,10 +891,10 @@ async def force_name(message: Message, state: FSMContext):
                 (channel_id, name, data['link'], datetime.now().isoformat())
             )
         
-        await message.answer(f"✅ {name} added!")
+        await message.answer(f"✅ Channel {name} added successfully!")
         await state.clear()
     except Exception as e:
-        await message.answer(f"❌ Error: {e}")
+        await message.answer(f"❌ Error: {str(e)}\n\nBot ကို Channel မှာ Admin လုပ်ထားကြောင်းစစ်ပါ။")
 
 @dp.callback_query(F.data == "force_list")
 async def force_list(callback: CallbackQuery):
@@ -895,7 +902,7 @@ async def force_list(callback: CallbackQuery):
         channels = conn.execute("SELECT * FROM force_channels").fetchall()
     
     if not channels:
-        await callback.message.edit_text("No channels", reply_markup=back_btn("admin_force"))
+        await callback.message.edit_text("No channels added yet.", reply_markup=back_btn("admin_force"))
         return
     
     text = "📋 **Force Channels**\n\n"
@@ -903,6 +910,7 @@ async def force_list(callback: CallbackQuery):
     
     for ch in channels:
         text += f"• {ch['channel_name']}\n"
+        text += f"  Link: {ch['channel_link']}\n"
         text += f"  ID: `{ch['channel_id']}`\n\n"
         kb.append([InlineKeyboardButton(text=f"❌ Delete {ch['channel_name']}", callback_data=f"del_chan_{ch['id']}")])
     
@@ -914,100 +922,95 @@ async def del_chan(callback: CallbackQuery):
     cid = int(callback.data.split("_")[2])
     with db.get_connection() as conn:
         conn.execute("DELETE FROM force_channels WHERE id=?", (cid,))
-    await callback.answer("Deleted!")
+    await callback.answer("Channel deleted!")
     await force_list(callback)
 
 # ==================== BAN/UNBAN ====================
 @dp.callback_query(F.data == "admin_ban")
 async def ban_start(callback: CallbackQuery, state: FSMContext):
-    await callback.message.edit_text("🚫 User ID ထည့်ပါ။", reply_markup=back_btn())
-    await state.set_state(AdminStates.waiting_for_ban_reason)
-    await state.update_data(ban_id=None)
+    await callback.message.edit_text("🚫 **Ban User**\n\nပိတ်ပင်လိုသော User ID ကိုရိုက်ထည့်ပါ။", reply_markup=back_btn())
+    await state.set_state(AdminStates.waiting_for_ban_id)
 
-@dp.message(AdminStates.waiting_for_ban_reason)
-async def ban_id(message: Message, state: FSMContext):
+@dp.message(AdminStates.waiting_for_ban_id)
+async def ban_process(message: Message, state: FSMContext):
     try:
-        uid = int(message.text)
-        await state.update_data(ban_id=uid)
-        await message.answer("အကြောင်းရင်းရိုက်ထည့်ပါ။")
-    except:
-        await message.answer("❌ User ID မှားနေပါသည်။")
-
-@dp.message(AdminStates.waiting_for_ban_reason)
-async def ban_reason(message: Message, state: FSMContext):
-    reason = message.text.strip()
-    data = await state.get_data()
-    uid = data.get('ban_id')
-    
-    if not uid:
-        await message.answer("❌ User ID မတွေ့ပါ။")
-        return
-    
-    with db.get_connection() as conn:
-        conn.execute("UPDATE users SET is_banned=1 WHERE user_id=?", (uid,))
-        conn.execute(
-            "INSERT OR REPLACE INTO banned_users (user_id, reason, banned_date, banned_by) VALUES (?,?,?,?)",
-            (uid, reason, datetime.now().isoformat(), OWNER_ID)
-        )
-        user = conn.execute("SELECT * FROM users WHERE user_id=?", (uid,)).fetchone()
-    
-    try:
-        await bot.send_message(uid, f"🚫 ပိတ်ပင်ခံရပါသည်။\nအကြောင်း: {reason}")
-    except:
-        pass
-    
-    await message.answer(f"✅ {uid} ({user['full_name']}) ကို ပိတ်ပင်လိုက်ပါပြီ။")
-    await state.clear()
+        uid = int(message.text.strip())
+        
+        with db.get_connection() as conn:
+            # Check if user exists
+            user = conn.execute("SELECT * FROM users WHERE user_id=?", (uid,)).fetchone()
+            if not user:
+                await message.answer("❌ User ID မတွေ့ပါ။")
+                await state.clear()
+                return
+            
+            # Add to banned_users
+            conn.execute("INSERT OR IGNORE INTO banned_users (user_id) VALUES (?)", (uid,))
+            conn.execute("UPDATE users SET is_banned=1 WHERE user_id=?", (uid,))
+        
+        # Notify user
+        try:
+            await bot.send_message(uid, f"🚫 သင်သည် Bot မှ ပိတ်ပင်ခံထားရပါသည်။")
+        except:
+            pass
+        
+        await message.answer(f"✅ User {uid} ({user['full_name']}) ကို ပိတ်ပင်လိုက်ပါပြီ။")
+        await state.clear()
+    except ValueError:
+        await message.answer("❌ User ID သည် နံပါတ်ဖြစ်ရပါမည်။")
 
 @dp.callback_query(F.data == "admin_unban")
 async def unban_start(callback: CallbackQuery, state: FSMContext):
-    await callback.message.edit_text("✅ User ID ထည့်ပါ။", reply_markup=back_btn())
+    await callback.message.edit_text("✅ **Unban User**\n\nပြန်ဖွင့်ပေးလိုသော User ID ကိုရိုက်ထည့်ပါ။", reply_markup=back_btn())
     await state.set_state(AdminStates.waiting_for_unban_id)
 
 @dp.message(AdminStates.waiting_for_unban_id)
 async def unban_process(message: Message, state: FSMContext):
     try:
-        uid = int(message.text)
+        uid = int(message.text.strip())
         
         with db.get_connection() as conn:
+            # Check if banned
             banned = conn.execute("SELECT * FROM banned_users WHERE user_id=?", (uid,)).fetchone()
             if not banned:
-                await message.answer("❌ ဤ User ပိတ်ပင်ခံထားရသူမဟုတ်ပါ။")
+                await message.answer("❌ ဤ User သည် ပိတ်ပင်ခံထားရသူမဟုတ်ပါ။")
+                await state.clear()
                 return
             
-            conn.execute("UPDATE users SET is_banned=0 WHERE user_id=?", (uid,))
+            # Remove from banned_users
             conn.execute("DELETE FROM banned_users WHERE user_id=?", (uid,))
+            conn.execute("UPDATE users SET is_banned=0 WHERE user_id=?", (uid,))
             user = conn.execute("SELECT * FROM users WHERE user_id=?", (uid,)).fetchone()
         
+        # Notify user
         try:
-            await bot.send_message(uid, "✅ ပြန်လည်ခွင့်ပြုလိုက်ပါပြီ။")
+            await bot.send_message(uid, f"✅ သင့်အား Bot မှ ပြန်လည်ခွင့်ပြုလိုက်ပါပြီ။")
         except:
             pass
         
-        await message.answer(f"✅ {uid} ({user['full_name']}) ကို ပြန်ဖွင့်ပေးလိုက်ပါပြီ။")
+        await message.answer(f"✅ User {uid} ({user['full_name']}) ကို ပြန်ဖွင့်ပေးလိုက်ပါပြီ။")
         await state.clear()
-    except:
-        await message.answer("❌ User ID မှားနေပါသည်။")
+    except ValueError:
+        await message.answer("❌ User ID သည် နံပါတ်ဖြစ်ရပါမည်။")
 
 @dp.callback_query(F.data == "admin_banned")
 async def banned_list(callback: CallbackQuery):
     with db.get_connection() as conn:
         banned = conn.execute(
-            "SELECT b.*, u.full_name FROM banned_users b LEFT JOIN users u ON b.user_id=u.user_id ORDER BY b.banned_date DESC"
+            "SELECT b.user_id, u.full_name, u.username FROM banned_users b LEFT JOIN users u ON b.user_id=u.user_id"
         ).fetchall()
     
     if not banned:
-        await callback.message.edit_text("📋 Banned List ဘာမှမရှိပါ။", reply_markup=back_btn())
+        await callback.message.edit_text("📋 **Banned Users List**\n\nပိတ်ပင်ခံထားရသူ မရှိပါ။", reply_markup=back_btn())
         return
     
-    text = "📋 **Banned List**\n\n"
+    text = "📋 **Banned Users List**\n\n"
     kb = []
     
     for b in banned:
         text += f"👤 {b['full_name']}\n"
         text += f"🆔 `{b['user_id']}`\n"
-        text += f"❌ {b['reason']}\n"
-        text += f"📅 {b['banned_date'][:10]}\n\n"
+        text += f"🔗 @{b['username'] if b['username'] != 'No username' else 'မရှိ'}\n\n"
         kb.append([InlineKeyboardButton(text=f"✅ Unban {b['full_name'][:15]}", callback_data=f"unban_{b['user_id']}")])
     
     kb.append([InlineKeyboardButton(text="🔙 Back", callback_data="admin_back")])
@@ -1018,16 +1021,16 @@ async def quick_unban(callback: CallbackQuery):
     uid = int(callback.data.split("_")[1])
     
     with db.get_connection() as conn:
-        conn.execute("UPDATE users SET is_banned=0 WHERE user_id=?", (uid,))
         conn.execute("DELETE FROM banned_users WHERE user_id=?", (uid,))
+        conn.execute("UPDATE users SET is_banned=0 WHERE user_id=?", (uid,))
         user = conn.execute("SELECT * FROM users WHERE user_id=?", (uid,)).fetchone()
     
     try:
-        await bot.send_message(uid, "✅ ပြန်လည်ခွင့်ပြုလိုက်ပါပြီ။")
+        await bot.send_message(uid, f"✅ သင့်အား Bot မှ ပြန်လည်ခွင့်ပြုလိုက်ပါပြီ။")
     except:
         pass
     
-    await callback.answer(f"Unbanned {uid}")
+    await callback.answer(f"User {uid} unbanned!")
     await banned_list(callback)
 
 # ==================== WELCOME ====================
@@ -1036,26 +1039,32 @@ async def welcome_menu(callback: CallbackQuery):
     with db.get_connection() as conn:
         w = conn.execute("SELECT * FROM welcome_settings WHERE id=1").fetchone()
     
-    has_photo = "ရှိ" if w['photo_id'] else "မရှိ"
+    has_photo = "ရှိသည်" if w['photo_id'] else "မရှိ"
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✏️ Edit Text", callback_data="welcome_text")],
-        [InlineKeyboardButton(text="🔘 Edit Buttons", callback_data="welcome_buttons")],
-        [InlineKeyboardButton(text="🖼 Add Photo", callback_data="welcome_add_photo")],
+        [InlineKeyboardButton(text="🔘 Edit Buttons (2 Columns)", callback_data="welcome_buttons")],
+        [InlineKeyboardButton(text="🖼 Add/Change Photo", callback_data="welcome_add_photo")],
         [InlineKeyboardButton(text="🗑 Remove Photo", callback_data="welcome_remove_photo")],
         [InlineKeyboardButton(text="👁 Preview", callback_data="welcome_preview")],
         [InlineKeyboardButton(text="🔙 Back", callback_data="admin_back")]
     ])
     
     await callback.message.edit_text(
-        f"👋 Welcome Settings\n\n📸 Photo: {has_photo}\n📝 {w['welcome_text'][:50]}...",
+        f"👋 **Welcome Message Settings**\n\n"
+        f"📸 ဓာတ်ပုံ: {has_photo}\n"
+        f"📝 စာသား: {w['welcome_text'][:50]}...",
         reply_markup=kb
     )
 
 @dp.callback_query(F.data == "welcome_text")
 async def welcome_text(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
-        "✏️ စာသားအသစ်ရိုက်ပါ။\n{name} သုံးနိုင်သည်။\n/default မူလစာသားပြန်",
+        "✏️ **Edit Welcome Text**\n\n"
+        "ကြိုဆိုစာသားအသစ်ကို ရိုက်ထည့်ပါ။\n"
+        "Variable: {{name}} ကိုသုံးပြီး user နာမည်ထည့်နိုင်သည်။\n\n"
+        "ဥပမာ: ကြိုဆိုပါတယ် {{name}} ရေ...\n\n"
+        "မူလစာသားပြန်သုံးလိုပါက /default ရိုက်ပါ။",
         reply_markup=back_btn("admin_welcome")
     )
     await state.set_state(AdminStates.waiting_for_welcome_text)
@@ -1070,15 +1079,20 @@ async def process_welcome_text(message: Message, state: FSMContext):
     with db.get_connection() as conn:
         conn.execute("UPDATE welcome_settings SET welcome_text=? WHERE id=1", (text,))
     
-    await message.answer("✅ သိမ်းပြီးပါပြီ။")
+    await message.answer("✅ Welcome Message အသစ်သိမ်းပြီးပါပြီ။")
     await state.clear()
 
 @dp.callback_query(F.data == "welcome_buttons")
 async def welcome_buttons(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
-        "🔘 Button ထည့်ရန်: နာမည်,link\n"
-        "ဥပမာ: Channel,https://t.me/abc\n"
-        "ပြီးရင် /done\n/clear ရှင်းမယ်\n/list ကြည့်မယ်",
+        "🔘 **Edit Welcome Buttons**\n\n"
+        "Button ထည့်ရန်: နာမည်,link\n"
+        "ဥပမာ: Channel,https://t.me/yourchannel\n"
+        "Website,https://example.com\n\n"
+        "Button များကို 2 Column နှုန်းဖြင့် ပြသမည်ဖြစ်သည်။\n\n"
+        "ပြီးရင် /done ရိုက်ပါ။\n"
+        "ဖျက်ချင်ရင် /clear ရိုက်ပါ။\n"
+        "လက်ရှိ Buttons ကြည့်ရန် /list ရိုက်ပါ။",
         reply_markup=back_btn("admin_welcome")
     )
     await state.set_state(AdminStates.waiting_for_welcome_buttons)
@@ -1092,16 +1106,16 @@ async def process_welcome_buttons(message: Message, state: FSMContext):
     if message.text == "/done":
         with db.get_connection() as conn:
             conn.execute("UPDATE welcome_settings SET buttons=? WHERE id=1", (json.dumps(btns),))
-        await message.answer(f"✅ {len(btns)} buttons သိမ်းပြီးပါပြီ။")
+        await message.answer(f"✅ Welcome buttons updated! Total: {len(btns)} buttons")
         await state.clear()
     
     elif message.text == "/clear":
         await state.update_data(btns=[])
-        await message.answer("✅ Cleared")
+        await message.answer("✅ Buttons cleared! Add new buttons or /done")
     
     elif message.text == "/list":
         if btns:
-            t = "**Buttons**\n"
+            t = "**လက်ရှိ Buttons များ**\n\n"
             for i, b in enumerate(btns, 1):
                 t += f"{i}. {b['text']} - {b['url']}\n"
             await message.answer(t)
@@ -1110,26 +1124,37 @@ async def process_welcome_buttons(message: Message, state: FSMContext):
     
     else:
         try:
-            name, link = message.text.split(',', 1)
-            name = name.strip()
-            link = link.strip()
+            parts = message.text.split(',', 1)
+            if len(parts) != 2:
+                await message.answer("❌ ပုံစံမှားနေပါသည်။ နမူနာ - နာမည်,link")
+                return
+            
+            name = parts[0].strip()
+            link = parts[1].strip()
+            
             if not link.startswith(('http://', 'https://', 't.me/')):
                 link = 'https://' + link
+            
             btns.append({'text': name, 'url': link})
             await state.update_data(btns=btns)
-            await message.answer(f"✅ Added! Total: {len(btns)}")
-        except:
-            await message.answer("❌ ပုံစံမှား။ နမူနာ: နာမည်,link")
+            await message.answer(f"✅ Button added! Total: {len(btns)}\nAdd more or /done")
+        except Exception as e:
+            await message.answer(f"❌ အမှားဖြစ်နေပါသည်။ နမူနာ - နာမည်,link")
 
 @dp.callback_query(F.data == "welcome_add_photo")
 async def welcome_add_photo(callback: CallbackQuery, state: FSMContext):
-    await callback.message.edit_text("🖼 ဓာတ်ပုံပို့ပါ။ /skip ရိုက်ပါက မထည့်ပဲထား", reply_markup=back_btn("admin_welcome"))
+    await callback.message.edit_text(
+        "🖼 **Add Welcome Photo**\n\n"
+        "ဓာတ်ပုံတစ်ပုံပို့ပေးပါ။\n"
+        "ဖျက်လိုပါက /skip ရိုက်ပါ။",
+        reply_markup=back_btn("admin_welcome")
+    )
     await state.set_state(AdminStates.waiting_for_welcome_photo)
 
 @dp.message(AdminStates.waiting_for_welcome_photo)
 async def process_welcome_photo(message: Message, state: FSMContext):
     if message.text == "/skip":
-        await message.answer("✅ မထည့်ပဲထားလိုက်ပါသည်။")
+        await message.answer("✅ Photo မထည့်ပဲ ရပ်နားလိုက်ပါသည်။")
         await state.clear()
         return
     
@@ -1137,10 +1162,10 @@ async def process_welcome_photo(message: Message, state: FSMContext):
         pid = message.photo[-1].file_id
         with db.get_connection() as conn:
             conn.execute("UPDATE welcome_settings SET photo_id=? WHERE id=1", (pid,))
-        await message.answer("✅ Photo added!")
+        await message.answer("✅ Welcome photo updated successfully!")
         await state.clear()
     else:
-        await message.answer("❌ ဓာတ်ပုံပို့ပါ။")
+        await message.answer("❌ ကျေးဇူးပြု၍ ဓာတ်ပုံပို့ပေးပါ။")
 
 @dp.callback_query(F.data == "welcome_remove_photo")
 async def welcome_remove_photo(callback: CallbackQuery):
@@ -1162,12 +1187,12 @@ async def welcome_preview(callback: CallbackQuery):
         await callback.message.delete()
         await callback.message.answer_photo(
             photo=photo,
-            caption=f"👁 Preview\n\n{text}",
+            caption=f"👁 **Preview**\n\n{text}",
             reply_markup=make_buttons(btns) or back_btn("admin_welcome")
         )
     else:
         await callback.message.edit_text(
-            f"👁 Preview\n\n{text}",
+            f"👁 **Preview**\n\n{text}",
             reply_markup=make_buttons(btns) or back_btn("admin_welcome")
         )
 
@@ -1175,7 +1200,10 @@ async def welcome_preview(callback: CallbackQuery):
 @dp.callback_query(F.data == "admin_broadcast")
 async def broadcast_start(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
-        "📢 Broadcast ပို့ရန် စာသားရိုက်ပါ။\nPhoto ပါထည့်လိုပါက photo အရင်ပို့ပါ။",
+        "📢 **Broadcast ပို့ရန်**\n\n"
+        "စာသားရိုက်ထည့်ပါ။\n"
+        "Button ထည့်လိုပါက /done ရိုက်ပြီး button ထည့်နိုင်သည်။\n"
+        "Photo ပါထည့်လိုပါက photo ကိုအရင်ပို့ပါ။",
         reply_markup=back_btn()
     )
     await state.set_state(AdminStates.waiting_for_broadcast)
@@ -1197,15 +1225,20 @@ async def broadcast_text(message: Message, state: FSMContext):
         [InlineKeyboardButton(text="❌ Cancel", callback_data="admin_back")]
     ])
     
+    preview = f"Broadcast Preview:\n\n{txt}"
+    
     if pid:
-        await message.answer_photo(photo=pid, caption=txt + "\n\nButton ထည့်လိုပါက Add နှိပ်ပါ။", reply_markup=kb)
+        await message.answer_photo(photo=pid, caption=preview + "\n\nButton ထည့်လိုပါက Add Button နှိပ်ပါ။", reply_markup=kb)
     else:
-        await message.answer(txt + "\n\nButton ထည့်လိုပါက Add နှိပ်ပါ။", reply_markup=kb)
+        await message.answer(preview + "\n\nButton ထည့်လိုပါက Add Button နှိပ်ပါ။", reply_markup=kb)
 
 @dp.callback_query(F.data == "broadcast_add")
 async def broadcast_add(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
-        "Button ထည့်ရန်: နာမည်,link\nဥပမာ: Channel,https://t.me/abc",
+        "Button ထည့်ရန်\n\n"
+        "Button Name နှင့် Link ကိုရိုက်ထည့်ပါ။\n"
+        "ပုံစံ - နာမည်,link\n"
+        "ဥပမာ - Channel,https://t.me/yourchannel",
         reply_markup=back_btn("admin_broadcast")
     )
     await state.set_state(AdminStates.waiting_for_broadcast_button)
@@ -1213,9 +1246,13 @@ async def broadcast_add(callback: CallbackQuery, state: FSMContext):
 @dp.message(AdminStates.waiting_for_broadcast_button)
 async def process_broadcast_btn(message: Message, state: FSMContext):
     try:
-        name, link = message.text.split(',', 1)
-        name = name.strip()
-        link = link.strip()
+        parts = message.text.split(',', 1)
+        if len(parts) != 2:
+            await message.answer("ပုံစံမှားနေပါသည်။ နမူနာ - နာမည်,link")
+            return
+        
+        name = parts[0].strip()
+        link = parts[1].strip()
         
         if not link.startswith(('http://', 'https://', 't.me/')):
             link = 'https://' + link
@@ -1231,9 +1268,9 @@ async def process_broadcast_btn(message: Message, state: FSMContext):
             [InlineKeyboardButton(text="❌ Cancel", callback_data="admin_back")]
         ])
         
-        await message.answer(f"✅ Added! Total: {len(btns)}", reply_markup=kb)
-    except:
-        await message.answer("❌ ပုံစံမှား။ နမူနာ: နာမည်,link")
+        await message.answer(f"Button Added! Total Buttons: {len(btns)}\n\nSend Now နှိပ်ပြီးပို့နိုင်သည်။", reply_markup=kb)
+    except Exception as e:
+        await message.answer("ပုံစံမှားနေပါသည်။ နမူနာ - နာမည်,link")
 
 @dp.callback_query(F.data == "broadcast_send")
 async def broadcast_send(callback: CallbackQuery, state: FSMContext):
@@ -1256,7 +1293,7 @@ async def broadcast_send(callback: CallbackQuery, state: FSMContext):
             rows.append(row)
         kb = InlineKeyboardMarkup(inline_keyboard=rows)
     
-    # Get users
+    # Get users (only non-banned)
     with db.get_connection() as conn:
         users = conn.execute("SELECT user_id FROM users WHERE is_banned=0").fetchall()
     
@@ -1276,10 +1313,10 @@ async def broadcast_send(callback: CallbackQuery, state: FSMContext):
         except:
             failed += 1
     
-    await callback.message.edit_text(f"✅ Done!\nSent: {sent}\nFailed: {failed}", reply_markup=back_btn())
+    await callback.message.edit_text(f"✅ Broadcast Done!\nSent: {sent}\nFailed: {failed}", reply_markup=back_btn())
     await state.clear()
 
-# ==================== BACKUP/RESTORE ====================
+# ==================== BACKUP ====================
 @dp.callback_query(F.data == "admin_backup")
 async def backup(callback: CallbackQuery):
     try:
@@ -1299,25 +1336,21 @@ async def backup(callback: CallbackQuery):
         with open(fn, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         
-        # Log
         size = os.path.getsize(fn)
-        with db.get_connection() as conn:
-            conn.execute(
-                "INSERT INTO backup_log (backup_date, filename, file_size) VALUES (?,?,?)",
-                (datetime.now().isoformat(), fn, size)
-            )
         
         await callback.message.answer_document(
             FSInputFile(fn),
-            caption=f"✅ Backup Done!\n📅 {ts}\n📦 {size} bytes"
+            caption=f"✅ **Backup Successful**\n\n📅 Date: {ts}\n📦 Size: {size} bytes"
         )
     except Exception as e:
-        await callback.message.answer(f"❌ Backup failed: {e}")
+        await callback.message.answer(f"❌ Backup failed: {str(e)}")
 
 @dp.callback_query(F.data == "admin_restore")
 async def restore_start(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
-        "🔄 JSON ဖိုင်ကို ပို့ပါ။\n⚠️ လက်ရှိဒေတာ အားလုံး ပျက်သွားမည်။",
+        "🔄 **Restore Data**\n\n"
+        "ယခင် backup လုပ်ထားသော JSON ဖိုင်ကို ပို့ပေးပါ။\n"
+        "⚠️ **သတိပေးချက်**: လက်ရှိဒေတာအားလုံး ပျက်သွားမည်ဖြစ်သည်။",
         reply_markup=back_btn()
     )
     await state.set_state(AdminStates.waiting_for_restore_file)
@@ -1325,7 +1358,7 @@ async def restore_start(callback: CallbackQuery, state: FSMContext):
 @dp.message(AdminStates.waiting_for_restore_file)
 async def restore_file(message: Message, state: FSMContext):
     if not message.document:
-        await message.answer("❌ JSON ဖိုင်ပို့ပါ။")
+        await message.answer("❌ JSON ဖိုင်ပို့ပေးပါ။")
         return
     
     try:
@@ -1336,16 +1369,16 @@ async def restore_file(message: Message, state: FSMContext):
         await state.update_data(restore=data)
         
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Confirm", callback_data="restore_confirm"),
+            [InlineKeyboardButton(text="✅ Confirm Restore", callback_data="restore_confirm"),
              InlineKeyboardButton(text="❌ Cancel", callback_data="admin_back")]
         ])
         
         await message.answer(
-            f"✅ File loaded!\nTables: {len(data)}\n\n⚠️ သေချာပါသလား?",
+            f"✅ **File loaded successfully**\n\nTables: {len(data)}\n\n⚠️ ဒေတာအားလုံး အစားထိုးမည်ဖြစ်သည်။ သေချာပါသလား?",
             reply_markup=kb
         )
     except Exception as e:
-        await message.answer(f"❌ Error: {e}")
+        await message.answer(f"❌ Restore failed: {str(e)}")
 
 @dp.callback_query(F.data == "restore_confirm")
 async def restore_confirm(callback: CallbackQuery, state: FSMContext):
@@ -1353,7 +1386,7 @@ async def restore_confirm(callback: CallbackQuery, state: FSMContext):
     restore = data.get('restore')
     
     if not restore:
-        await callback.message.edit_text("❌ No data")
+        await callback.message.edit_text("❌ No data to restore")
         return
     
     try:
@@ -1376,10 +1409,10 @@ async def restore_confirm(callback: CallbackQuery, state: FSMContext):
             conn.execute("INSERT OR IGNORE INTO game_settings (id) VALUES (1)")
             conn.execute("INSERT OR IGNORE INTO welcome_settings (id) VALUES (1)")
         
-        await callback.message.edit_text("✅ Restore completed!", reply_markup=back_btn())
+        await callback.message.edit_text("✅ **Restore completed successfully!**\n\nဒေတာအားလုံး ပြန်လည်တင်ပြီးပါပြီ။", reply_markup=back_btn())
         await state.clear()
     except Exception as e:
-        await callback.message.edit_text(f"❌ Restore failed: {e}")
+        await callback.message.edit_text(f"❌ Restore failed: {str(e)}")
 
 # ==================== ERROR HANDLER ====================
 @dp.errors()
