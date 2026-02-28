@@ -19,7 +19,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 # ==================== CONFIG ====================
 BOT_TOKEN = "7654055081:AAFJSMVlJ1nZtZSeYiU9hLsl_4AVgUoAiHs"
-OWNER_ID = 6231318714
+OWNER_ID = 1735522859
 GROUP_ID = -1002473190844
 
 # Token စစ်ဆေး
