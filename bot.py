@@ -22,10 +22,6 @@ BOT_TOKEN = "7654055081:AAFJSMVlJ1nZtZSeYiU9hLsl_4AVgUoAiHs"
 OWNER_ID = 6231318714
 GROUP_ID = -1002473190844
 
-# Token စစ်ဆေး
-if not BOT_TOKEN or BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
-    raise ValueError("❌ Bot Token ထည့်ပေးပါ။")
-
 # ==================== LOGGING ====================
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
