@@ -22,6 +22,10 @@ BOT_TOKEN = "7654055081:AAFJSMVlJ1nZtZSeYiU9hLsl_4AVgUoAiHs"
 OWNER_ID = 6231318714
 GROUP_ID = -1002473190844
 
+# Token စစ်ဆေး
+if not BOT_TOKEN:
+    raise ValueError("❌ Bot Token ထည့်ပေးပါ။")
+
 # ==================== LOGGING ====================
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -223,6 +227,7 @@ async def start(message: Message):
             referrer_id = int(message.text.split()[1])
             if referrer_id == user_id:
                 referrer_id = None
+            print(f"🔗 Referrer ID from link: {referrer_id}")  # Debug
         except:
             pass
     
@@ -240,6 +245,7 @@ async def start(message: Message):
                 "INSERT INTO users (user_id, username, full_name, join_date, referred_by) VALUES (?,?,?,?,?)",
                 (user_id, username, full_name, datetime.now().isoformat(), referrer_id or 0)
             )
+            print(f"✅ New user added: {user_id}")  # Debug
             
             # Handle referral notification
             if referrer_id:
@@ -265,8 +271,9 @@ async def start(message: Message):
 💰 သူကံစမ်းမှသာ Bonus 50 ကျပ်ရမည်။
                         """
                         await bot.send_message(referrer_id, text)
-                    except:
-                        pass
+                        print(f"📤 Referral notification sent to {referrer_id}")  # Debug
+                    except Exception as e:
+                        print(f"❌ Failed to send referral notification: {e}")
     
     # Check channels
     joined, not_joined = await check_channels(user_id)
@@ -292,6 +299,8 @@ async def start(message: Message):
     
     if buttons:
         await message.answer("🔗 **အသုံးဝင်သော Link များ**", reply_markup=make_buttons(buttons))
+    
+    print(f"✅ Start completed for user {user_id}")  # Debug
 
 @dp.callback_query(F.data == "check_join")
 async def check_join(callback: CallbackQuery):
@@ -674,6 +683,7 @@ async def withdraw_amount(message: Message, state: FSMContext):
 @dp.message(Command("admin"))
 async def admin_panel(message: Message):
     if message.from_user.id != OWNER_ID:
+        await message.answer("❌ သင်သည် Owner မဟုတ်ပါ။")
         return
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
