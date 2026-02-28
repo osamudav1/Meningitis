@@ -18,7 +18,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
 # ==================== CONFIG ====================
-BOT_TOKEN = "7637155076:AAH88nASfWHsN70SeQxE5_8T9Un0xACnR1U"
+BOT_TOKEN = "7654055081:AAFJSMVlJ1nZtZSeYiU9hLsl_4AVgUoAiHs"
 OWNER_ID = 6231318714
 GROUP_ID = -1002473190844
 
