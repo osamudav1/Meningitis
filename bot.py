@@ -19,7 +19,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 # ==================== CONFIG ====================
 BOT_TOKEN = "7654055081:AAFJSMVlJ1nZtZSeYiU9hLsl_4AVgUoAiHs"
-OWNER_ID = 1735522859
+OWNER_ID = 6762363593
 GROUP_ID = -1002473190844
 
 # Token စစ်ဆေး
@@ -363,7 +363,7 @@ async def invite(message: Message):
 ခေါ်ဆောင်နိုင်သည့်အများဆုံး: {user['invite_limit']} ယောက်
 
 **သင်၏ Invite Link:**
-`{invite_link}`
+ {invite_link}
 
 👉 အထက်ပါ Link ကိုနှိပ်၍ Copy ကူးနိုင်ပါသည်။
         """
